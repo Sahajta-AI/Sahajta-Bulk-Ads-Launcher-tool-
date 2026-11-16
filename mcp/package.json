@@ -1,0 +1,17 @@
+{
+  "name": "sahajta-ads-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Claude Desktop extension for the Sahajta Ads Launcher",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@anthropic-ai/mcpb": "2.1.2",
+    "esbuild": "0.28.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

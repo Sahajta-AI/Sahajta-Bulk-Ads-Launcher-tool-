@@ -1,0 +1,18 @@
+node_modules/
+.next/
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
+mcp/node_modules/
+mcp/dist/
+*.mcpb
+coverage/
+next-env.d.ts
+*.tsbuildinfo
+
+# Personal hand-off notes (kept locally, not published)
+docs/message-to-*.md

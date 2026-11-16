@@ -1,0 +1,48 @@
+{
+  "manifest_version": "0.3",
+  "name": "sahajta-ads",
+  "display_name": "Sahajta Ads Launcher",
+  "version": "0.1.0",
+  "description": "Preview and launch Meta ads (always paused) from a Google Drive folder, through the Sahajta Ads Launcher.",
+  "long_description": "Ask Claude to launch a folder of creatives into a Meta ad set with a saved copy template. Claude shows you a preview first (names, files, copy, warnings, time estimate) and asks before launching. Every ad and ad set is created paused; you switch them on yourself in Ads Manager. This extension only talks to the launcher's API with your personal key. It never holds the Meta token.",
+  "author": { "name": "Sahajta AI" },
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {
+        "ADS_LAUNCHER_URL": "${user_config.app_url}",
+        "ADS_LAUNCHER_API_KEY": "${user_config.api_key}"
+      }
+    }
+  },
+  "tools": [
+    { "name": "list_destinations", "description": "Campaigns and ad sets you can launch into" },
+    { "name": "list_templates", "description": "Saved copy, naming and Meta settings presets" },
+    { "name": "preview_batch", "description": "Build a batch from a Drive folder and show the preview. Creates nothing in Meta." },
+    { "name": "launch_batch", "description": "Launch a previewed batch. Always paused. Needs confirm: true." },
+    { "name": "batch_status", "description": "Progress, Ads Manager links and Meta review status" }
+  ],
+  "user_config": {
+    "api_key": {
+      "type": "string",
+      "title": "Launcher API key",
+      "description": "Create it in the launcher: Settings → Claude connection → Create a key.",
+      "sensitive": true,
+      "required": true
+    },
+    "app_url": {
+      "type": "string",
+      "title": "Launcher address",
+      "description": "Leave as it is unless your admin tells you otherwise.",
+      "default": "https://launcher.sahajta.com",
+      "required": true
+    }
+  },
+  "compatibility": { "platforms": ["darwin", "win32", "linux"], "runtimes": { "node": ">=18.0.0" } },
+  "keywords": ["meta", "ads", "facebook", "instagram", "launcher"],
+  "license": "UNLICENSED"
+}

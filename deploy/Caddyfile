@@ -1,0 +1,23 @@
+# HTTPS for the launcher. Caddy gets and renews the certificate by itself.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:3000 {
+		# Long uploads and long API calls (preview of a big Drive folder).
+		transport http {
+			read_timeout 15m
+			write_timeout 15m
+		}
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
+# The old address (ads.sahajta.com) forwards to the new one: ad blockers block every file from
+# hosts that start with "ads.". Unset OLD_DOMAIN serves nothing extra (localhost only).
+{$OLD_DOMAIN:localhost} {
+	redir https://{$DOMAIN}{uri} permanent
+}

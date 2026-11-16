@@ -1,0 +1,43 @@
+# Production stack on the Oracle machine: web app, launch worker, Caddy (HTTPS).
+# Start or update: docker compose up -d --build
+services:
+  app:
+    build: .
+    image: sahajta-ads-launcher
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - launcher-data:/data
+    restart: unless-stopped
+    expose: ["3000"]
+
+  worker:
+    image: sahajta-ads-launcher
+    depends_on: [app]
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - launcher-data:/data
+    command: ["npx", "tsx", "src/worker/index.ts"]
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    stop_grace_period: 10s
+
+  caddy:
+    image: caddy:2.10-alpine
+    depends_on: [app]
+    env_file: .env
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  launcher-data:
+  caddy-data:
+  caddy-config:

@@ -1,0 +1,10 @@
+node_modules
+mcp/node_modules
+mcp/dist
+*.mcpb
+.next
+data
+.env
+.env.*
+.git
+coverage
