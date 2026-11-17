@@ -208,4 +208,64 @@ export const migrations: string[] = [
   ALTER TABLE ad_accounts ADD COLUMN connected_by TEXT;          -- launcher user who connected it
   ALTER TABLE ad_accounts ADD COLUMN connected_at TEXT;
   `,
+  // 3: The marketer's change list (Nov 2026): campaign naming templates, go-live choice, several
+  //    ad sets per launch (sibling batches), change plans, metric column sets, custom metrics.
+  `
+  CREATE TABLE naming_templates_v3 (
+    id INTEGER PRIMARY KEY,
+    ad_account_id INTEGER NOT NULL REFERENCES ad_accounts(id),
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('ad', 'adset', 'campaign')),
+    pattern TEXT NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0
+  );
+  INSERT INTO naming_templates_v3 (id, ad_account_id, name, kind, pattern, is_default)
+    SELECT id, ad_account_id, name, kind, pattern, is_default FROM naming_templates;
+  DROP TABLE naming_templates;
+  ALTER TABLE naming_templates_v3 RENAME TO naming_templates;
+
+  ALTER TABLE batches ADD COLUMN go_live TEXT NOT NULL DEFAULT 'paused'; -- paused | now | at
+  ALTER TABLE batches ADD COLUMN go_live_at TEXT;                         -- ISO time, when go_live = 'at'
+  ALTER TABLE batches ADD COLUMN go_live_done INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE batches ADD COLUMN persona TEXT NOT NULL DEFAULT '';
+  ALTER TABLE batches ADD COLUMN group_key TEXT;                          -- same value for batches launched together into several ad sets
+  ALTER TABLE batches ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE batches ADD COLUMN extra_adsets TEXT NOT NULL DEFAULT '[]';  -- JSON [{id, name, campaignId, campaignName}]: same ads also go here
+
+  CREATE TABLE plans (
+    id INTEGER PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    ad_account_id INTEGER NOT NULL REFERENCES ad_accounts(id),
+    title TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'draft',        -- draft | queued | running | done | partial | failed | cancelled
+    ops TEXT NOT NULL,                           -- JSON list of operations, as given
+    summary TEXT,                                -- JSON pre-launch summary from the last check
+    can_spend INTEGER NOT NULL DEFAULT 0,        -- 1 if running it can make Meta spend money
+    run_at TEXT,                                 -- ISO time; NULL = as soon as confirmed
+    progress TEXT NOT NULL DEFAULT '[]',         -- JSON per step: {status, ids, message}
+    created_by TEXT,
+    source TEXT NOT NULL DEFAULT 'app',          -- app | claude
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    confirmed_at TEXT,
+    confirmed_by TEXT,
+    finished_at TEXT
+  );
+
+  CREATE TABLE column_sets (
+    id INTEGER PRIMARY KEY,
+    ad_account_id INTEGER NOT NULL REFERENCES ad_accounts(id),
+    name TEXT NOT NULL,
+    metrics TEXT NOT NULL DEFAULT '[]',          -- JSON list of metric names (Meta fields, actions:<type>, or custom metric names)
+    is_default INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE custom_metrics (
+    id INTEGER PRIMARY KEY,
+    ad_account_id INTEGER NOT NULL REFERENCES ad_accounts(id),
+    name TEXT NOT NULL,
+    formula TEXT NOT NULL,                       -- e.g. spend / actions:offsite_conversion.fb_pixel_custom
+    format TEXT NOT NULL DEFAULT 'number',       -- number | money | percent
+    description TEXT NOT NULL DEFAULT ''
+  );
+  `,
 ];

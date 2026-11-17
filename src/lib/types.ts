@@ -104,6 +104,13 @@ export interface BatchRow {
   previewed_at: string | null;
   launched_at: string | null;
   finished_at: string | null;
+  go_live: "paused" | "now" | "at";
+  go_live_at: string | null;
+  go_live_done: number;
+  persona: string;
+  group_key: string | null;
+  cancel_requested: number;
+  extra_adsets: string;
 }
 
 export interface AdAccountRow {

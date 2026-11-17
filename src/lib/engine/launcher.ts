@@ -12,6 +12,7 @@ import { slotOf } from "./grouping";
 import { extractFrame } from "./media";
 import { keyTag, metaName, renderUtm } from "./naming";
 import { adNameContext } from "./preview";
+import { adsetCloneParams, getAdSet, getCampaign, isCbo } from "../manage/objects";
 
 // The launch engine. Runs one batch to the end, one Meta call at a time, paced.
 //
@@ -240,14 +241,26 @@ async function advanceAd(deps: LaunchDeps, batch: BatchRow, ad: AdRow): Promise<
       setStep(ad, "Creating the ad set (copy of the template)");
       const { id, adopted } = await createOnce(deps, ad, "adset", "adsets", async (key) => {
         // The copy carries the key from the start (rename_suffix), so a retry can always find it.
-        const res = await client.post<{ copied_adset_id?: string; ad_object_ids?: { copied_id: string }[] }>(`${batch.adset_id}/copies`, {
-          deep_copy: false,
-          status_option: "PAUSED",
-          rename_options: { rename_strategy: "ONLY_TOP_LEVEL_RENAME", rename_suffix: ` ${keyTag(ad.key)}` },
-        }, { idempotencyKey: key });
-        const newId = res.copied_adset_id ?? res.ad_object_ids?.[0]?.copied_id;
-        if (!newId) throw new MetaError("Meta did not return the new ad set ID", { status: 200 });
-        return newId;
+        try {
+          const res = await client.post<{ id?: string; copied_adset_id?: string; ad_object_ids?: { copied_id: string }[] }>(`${batch.adset_id}/copies`, {
+            deep_copy: false,
+            status_option: "PAUSED",
+            rename_options: { rename_strategy: "ONLY_TOP_LEVEL_RENAME", rename_suffix: ` ${keyTag(ad.key)}` },
+          }, { idempotencyKey: key });
+          const newId = res.copied_adset_id ?? res.ad_object_ids?.[0]?.copied_id ?? res.id;
+          if (!newId) throw new MetaError("Meta did not return the new ad set ID", { status: 200 });
+          return newId;
+        } catch (e) {
+          // Meta refuses a copy whose spend limits don't fit a campaign budget (1885648: "minimum spend
+          // limit is higher than campaign budget"). Build the ad set from the template's settings instead,
+          // without the spend limits. The name carries the key, like a copy.
+          if (!(e instanceof MetaError) || e.subcode !== 1885648) throw e;
+          const src = await getAdSet(client, batch.adset_id!);
+          const camp = await getCampaign(client, src.campaign_id);
+          logEvent(batch.id, ad.id, "info", `Meta refused a plain copy of the template (its minimum spend is above the campaign budget). Building the ad set from the template's settings without the spend limits.`);
+          const res = await client.post<{ id: string }>(`${client.accountId}/adsets`, adsetCloneParams(src, src.campaign_id, `${src.name} ${keyTag(ad.key)}`, isCbo(camp)), { idempotencyKey: idempotencyKey(`${ad.key}:adset-rebuild`) });
+          return res.id;
+        }
       });
       adsetId = id;
       updateAd(ad.id, { meta_adset_id: adsetId });
@@ -362,6 +375,11 @@ export async function runBatch(batchId: number, deps: LaunchDeps): Promise<RunRe
   for (;;) {
     const ads = getAds(batchId).filter((a) => a.status !== "done" && a.status !== "failed");
     if (!ads.length) break;
+    if (getBatch(batchId)?.cancel_requested) {
+      for (const a of ads) updateAd(a.id, { status: "failed", error: 'Cancelled before it was created. Press "Retry failed" to create it.', wait_until: null });
+      logEvent(batchId, null, "warn", `Cancelled: ${ads.length} ad${ads.length > 1 ? "s" : ""} not created. Ads already created stay paused in Meta.`);
+      break;
+    }
     const now = deps.clock.now();
     const ready = ads.find((a) => a.status !== "waiting" || !a.wait_until || a.wait_until <= now);
     if (!ready) {

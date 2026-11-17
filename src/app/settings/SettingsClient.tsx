@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { renderName } from "@/lib/engine/naming";
 import type { Templates } from "../batches/[key]/BatchClient";
+import IdentityCard from "../IdentityCard";
+import type { Identities } from "@/lib/service";
 import { api } from "../client-api";
 import MetaTab from "./MetaTab";
 
@@ -89,9 +91,9 @@ function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; ctas: s
 }
 
 function NamingTab({ tpl, reload }: { tpl: FullTemplates; reload: () => void }) {
-  const [draft, setDraft] = useState<{ id?: number; name: string; kind: "ad" | "adset"; pattern: string; isDefault: boolean } | null>(null);
+  const [draft, setDraft] = useState<{ id?: number; name: string; kind: "ad" | "adset" | "campaign"; pattern: string; isDefault: boolean } | null>(null);
   const [error, setError] = useState("");
-  const sample = { date: new Date(), creative: "hook-01", angle: "price", format: "VID-9x16+4x5", n: 1, copy: "Site-visit copy", campaign: "November tests", adset: "Broad 25-45", batch: "k4r94" };
+  const sample = { date: new Date(), creative: "hook-01", angle: "price", format: "VID-9x16+4x5", n: 1, copy: "Site-visit copy", campaign: "November tests", adset: "Broad 25-45", batch: "k4r94", persona: "investor", objective: "LEADS", budget: "1500" };
 
   async function save() {
     try {
@@ -105,10 +107,10 @@ function NamingTab({ tpl, reload }: { tpl: FullTemplates; reload: () => void }) 
 
   return (
     <>
-      {(["ad", "adset"] as const).map((kind) => (
+      {(["ad", "adset", "campaign"] as const).map((kind) => (
         <div className="panel" key={kind}>
-          <header><h2>{kind === "ad" ? "Ad names" : "New ad set names"}</h2>
-            <button style={{ marginLeft: "auto" }} onClick={() => setDraft({ name: "", kind, pattern: kind === "ad" ? "{date}_{creative}_{angle}_{format}" : "{date}_{creative}", isDefault: false })}>Add</button>
+          <header><h2>{kind === "ad" ? "Ad names" : kind === "adset" ? "New ad set names" : "New campaign names"}</h2>
+            <button style={{ marginLeft: "auto" }} onClick={() => setDraft({ name: "", kind, pattern: kind === "ad" ? "{date}_{creative}_{angle}_{format}" : kind === "adset" ? "{date}_{creative}" : "{date}_{objective}_{persona}_{n}", isDefault: false })}>Add</button>
           </header>
           {tpl.naming.filter((n) => n.kind === kind).map((n) => (
             <div className="list-item" key={n.id}>
@@ -128,8 +130,8 @@ function NamingTab({ tpl, reload }: { tpl: FullTemplates; reload: () => void }) 
             <label><span>Name</span><input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label>
             <label><span>Pattern</span><input value={draft.pattern} onChange={(e) => setDraft({ ...draft, pattern: e.target.value })} /></label>
           </div>
-          <p>Preview: <span className="preview-name">{renderName(draft.pattern, sample)} [L:k4r94-01]</span></p>
-          <label className="check"><input type="checkbox" checked={draft.isDefault} onChange={(e) => setDraft({ ...draft, isDefault: e.target.checked })} /> Use for new batches</label>
+          <p>Preview: <span className="preview-name">{renderName(draft.pattern, sample)}{draft.kind === "campaign" ? "" : " [L:k4r94-01]"}</span></p>
+          <label className="check"><input type="checkbox" checked={draft.isDefault} onChange={(e) => setDraft({ ...draft, isDefault: e.target.checked })} /> {draft.kind === "campaign" ? "Use for new campaigns" : "Use for new batches"}</label>
           <details open><summary>Words you can use</summary>{tpl.tokens.map((t) => <div key={t.token}><code>{t.token}</code> {t.meaning}</div>)}</details>
           {error && <div className="msg error">{error}</div>}
           <div className="row" style={{ marginTop: 10 }}><button className="primary" onClick={save}>Save</button><button onClick={() => setDraft(null)}>Cancel</button></div>
@@ -142,7 +144,7 @@ function NamingTab({ tpl, reload }: { tpl: FullTemplates; reload: () => void }) 
 function PresetEditor({ p, features, onSaved, onCancel }: { p: Partial<PresetT>; features: FullTemplates["features"]; onSaved: () => void; onCancel: () => void }) {
   const [form, setForm] = useState({ id: p.id, name: p.name ?? "", pageId: p.pageId ?? "", pageName: p.pageName ?? "", igUserId: p.igUserId ?? "", igName: p.igName ?? "", multiAdvertiser: p.multiAdvertiser ?? false, isDefault: p.isDefault ?? false });
   const [on, setOn] = useState<Set<string>>(new Set(p.enhancementsOn ?? []));
-  const [ids, setIds] = useState<{ pages: { id: string; name: string }[]; instagram: { id: string; username: string }[] } | null>(null);
+  const [ids, setIds] = useState<Identities | null>(null);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -165,17 +167,25 @@ function PresetEditor({ p, features, onSaved, onCancel }: { p: Partial<PresetT>;
         <label><span>Facebook Page</span>
           <select value={form.pageId} onChange={(e) => setForm({ ...form, pageId: e.target.value, pageName: ids?.pages.find((x) => x.id === e.target.value)?.name ?? "" })}>
             <option value="">Pick a Page</option>
-            {ids?.pages.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+            {ids?.pages.map((x) => <option key={x.id} value={x.id}>{x.name} · ID {x.id}</option>)}
             {form.pageId && !ids?.pages.some((x) => x.id === form.pageId) && <option value={form.pageId}>{form.pageName || form.pageId}</option>}
           </select>
         </label>
         <label><span>Instagram account</span>
           <select value={form.igUserId} onChange={(e) => setForm({ ...form, igUserId: e.target.value, igName: ids?.instagram.find((x) => x.id === e.target.value)?.username ?? "" })}>
             <option value="">None (use the Facebook Page)</option>
-            {ids?.instagram.map((x) => <option key={x.id} value={x.id}>@{x.username}</option>)}
-            {form.igUserId && !ids?.instagram.some((x) => x.id === form.igUserId) && <option value={form.igUserId}>{form.igName || form.igUserId}</option>}
+            {ids?.instagram.map((x) => <option key={x.id} value={x.id}>@{x.username} · ID {x.id}</option>)}
+            {form.igUserId && !ids?.instagram.some((x) => x.id === form.igUserId) && <option value={form.igUserId}>{form.igName || form.igUserId}{ids?.instagramKnown ? " (not allowed for this ad account)" : ""}</option>}
           </select>
         </label>
+      </div>
+      <div className="identities">
+        {form.pageId && (() => { const pg = ids?.pages.find((x) => x.id === form.pageId); return <IdentityCard kind="page" name={pg?.name ?? form.pageName ?? form.pageId} id={form.pageId} pictureUrl={pg?.pictureUrl} link={pg?.link ?? `https://www.facebook.com/${form.pageId}`} />; })()}
+        {form.igUserId && (() => {
+          const ig = ids?.instagram.find((x) => x.id === form.igUserId);
+          const bad = !!ids?.instagramKnown && !ig;
+          return <IdentityCard kind="instagram" name={ig?.username ?? form.igName ?? form.igUserId} id={form.igUserId} pictureUrl={ig?.pictureUrl} link={ig?.link ?? (form.igName ? `https://www.instagram.com/${form.igName}` : null)} warning={bad ? "This ad account is not allowed to use this Instagram account, so Meta would refuse every ad. Pick another one or None, or assign it to the ad account in Meta Business settings → Instagram accounts → Assign assets." : null} />;
+        })()}
       </div>
       <h2 style={{ marginTop: 16 }}>AI creative enhancements</h2>
       <p className="muted">Off means Meta shows your files and text exactly as you made them. Tick only what you want Meta to change.</p>

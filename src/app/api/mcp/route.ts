@@ -19,7 +19,7 @@ async function handle(req: Request) {
     return Response.json({ error: "Send an API key: Authorization: Bearer <key>. Create one in Settings → Claude connection." }, { status: 401 });
   }
   const key = req.headers.get("authorization")!.slice(7).trim();
-  const server = new McpServer({ name: "sahajta-ads", version: "0.1.0" });
+  const server = new McpServer({ name: "sahajta-ads", version: "0.2.0" });
   registerTools(server, httpApi(`http://127.0.0.1:${PORT}`, key));
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);

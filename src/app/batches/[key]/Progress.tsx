@@ -46,10 +46,24 @@ export default function Progress({ view, busy, error, act, batchKey }: { view: B
         )}
         {!running && (
           <div className="msg info">
-            Every ad is <strong>paused</strong>. Review them in Ads Manager and switch them on yourself when you are happy.
+            <strong>What happened:</strong> {pr.done} ad{pr.done === 1 ? "" : "s"} created{pr.failed ? `, ${pr.failed} not created (the reason is next to each one below)` : ""}.{" "}
+            {pr.failed > 0 && <>Fix the cause, then press <strong>Retry</strong>: ads already created are never made twice. </>}
+            {view.settings.goLive === "paused"
+              ? <>Every created ad is <strong>paused</strong>. Turn them on in Ads Manager or under <a href="/manage">Campaigns</a>.</>
+              : view.settings.goLive === "now"
+                ? <>The ads are turned on once every ad is in. The activity log below shows when.</>
+                : <>The ads are turned on at {view.settings.goLiveAt ? new Date(view.settings.goLiveAt).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" }) : "the set time"} (India time), once every ad is in.</>}
           </div>
         )}
+        {view.together.length > 0 && (
+          <p className="muted">Launched together into other ad sets: {view.together.map((t, i) => <span key={t.key}>{i ? ", " : ""}<a href={`/batches/${t.key}`}>{t.adsetName ?? t.key}</a> ({t.status})</span>)}</p>
+        )}
         <div className="row" style={{ marginTop: 8 }}>
+          {running && (
+            <button className="danger" disabled={!!busy || view.cancelRequested} onClick={() => confirm("Stop this launch after the current step? Ads already created stay (paused). Nothing is deleted.") && act("cancel", () => api<BatchView>(`/api/batches/${batchKey}/cancel`, { method: "POST" }))}>
+              {view.cancelRequested ? "Stopping after the current step…" : busy === "cancel" ? "Stopping…" : "Stop the launch"}
+            </button>
+          )}
           {pr.failed > 0 && !running && (
             <button className="primary" disabled={!!busy} onClick={() => act("retry", () => api<BatchView>(`/api/batches/${batchKey}/retry`, { method: "POST" }))}>
               {busy === "retry" ? "Starting…" : `Retry the ${pr.failed} failed ad${pr.failed === 1 ? "" : "s"} only`}

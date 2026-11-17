@@ -37,7 +37,8 @@ describe("Connect Meta", () => {
     expect(a.adAccounts.map((x) => [x.id, x.active])).toEqual([["act_1001", true], ["act_3003", false]]);
     expect(a.pages[0]).toMatchObject({ id: "p1", instagram: { id: "ig1", username: "sahajta.ai" } });
 
-    expect(await listInstagram(EMAIL, "act_1001")).toEqual([{ id: "ig1", username: "sahajta.ai" }]);
+    expect(await listInstagram(EMAIL, "act_1001")).toEqual([{ id: "ig1", username: "sahajta.ai", pictureUrl: null, link: "https://www.instagram.com/sahajta.ai", allowed: true }]);
+    expect(a.pages[0]).toMatchObject({ link: "https://www.facebook.com/p1" });
     await expect(selectAssets(EMAIL, { adAccountId: "act_3003", pageId: "p1" })).rejects.toThrow(/not active/);
     await expect(selectAssets(EMAIL, { adAccountId: "act_1001", pageId: "p1", igUserId: "ig-unknown" })).rejects.toThrow(/Instagram/);
     const id = await selectAssets(EMAIL, { adAccountId: "act_1001", pageId: "p1", igUserId: "ig1" });
@@ -78,7 +79,12 @@ describe("Connect Meta", () => {
     db().prepare("INSERT INTO copy_templates (ad_account_id, name) VALUES (?, 'Diwali copy')").run(first);
 
     savePending(EMAIL, await exchangeCode("practice"));
-    const second = await selectAssets(EMAIL, { adAccountId: "act_2002", pageId: "p1", igUserId: "ig1" });
+    // The agency's ad account has no Instagram account assigned: the Page's one is listed but not allowed
+    // (Meta would refuse every creative with 200/1815199, as in batch rbqdz), so picking it is refused.
+    const igs = await listInstagram(EMAIL, "act_2002");
+    expect(igs).toEqual([expect.objectContaining({ id: "ig1", allowed: false })]);
+    await expect(selectAssets(EMAIL, { adAccountId: "act_2002", pageId: "p1", igUserId: "ig1" })).rejects.toThrow(/not allowed to use @sahajta.ai/);
+    const second = await selectAssets(EMAIL, { adAccountId: "act_2002", pageId: "p1" });
     expect(second).not.toBe(first);
     expect(getAccount()!.meta_account_id).toBe("act_2002");
     const names = (db().prepare("SELECT name FROM copy_templates WHERE ad_account_id = ?").all(second) as { name: string }[]).map((r) => r.name);

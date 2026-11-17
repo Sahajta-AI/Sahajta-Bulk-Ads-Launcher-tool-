@@ -117,7 +117,7 @@ describe("no duplicates", () => {
     expect(first).toEqual({ done: 8, failed: 1 });
     expect(getBatch(batchId)!.status).toBe("partial");
     const failed = getAds(batchId).find((a) => a.status === "failed")!;
-    expect(failed.error).toBe("Creating the ad (paused) failed: Link not allowed. The landing page breaks Meta's policy.");
+    expect(failed.error).toBe(`Creating the ad (paused) failed. Meta said: "Link not allowed: The landing page breaks Meta's policy." (code 100).`);
 
     expect(resetFailed(batchId)).toBe(1);
     const second = await runBatch(batchId, deps);

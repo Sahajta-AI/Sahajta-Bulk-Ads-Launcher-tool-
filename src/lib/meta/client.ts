@@ -30,6 +30,24 @@ function encodeParams(params: Params): URLSearchParams {
   return q;
 }
 
+/** Values of `status` that remove an object from Ads Manager. The launcher never sends them. */
+const DELETING_STATUSES = new Set(["DELETED", "ARCHIVED"]);
+
+export class DeletionRefused extends Error {}
+
+/**
+ * The launcher never deletes or archives anything in Meta: no DELETE requests, and no
+ * status DELETED or ARCHIVED on any object. Turning off (PAUSED) is allowed.
+ */
+export function refuseDeletion(method: string, params: Params | FormData) {
+  if (method === "DELETE") throw new DeletionRefused("Deleting is turned off in the launcher. Turn the item off (pause it) instead.");
+  const get = (k: string) => (params instanceof FormData ? params.get(k) : (params as Params)[k]);
+  for (const k of ["status", "status_option", "configured_status"]) {
+    const v = get(k);
+    if (typeof v === "string" && DELETING_STATUSES.has(v.toUpperCase())) throw new DeletionRefused("Deleting or archiving is turned off in the launcher. Turn the item off (pause it) instead.");
+  }
+}
+
 export class MetaClient {
   readonly accountId: string;
   readonly pacer: Pacer;
@@ -83,11 +101,8 @@ export class MetaClient {
     return this.request<T>("POST", path, params, WRITE_COST, opts.idempotencyKey ? { "X-Client-Idempotent-Key": opts.idempotencyKey } : undefined);
   }
 
-  delete<T = Record<string, unknown>>(path: string): Promise<T> {
-    return this.request<T>("DELETE", path, {}, WRITE_COST);
-  }
-
   private async request<T>(method: string, path: string, params: Params | FormData, cost: number, extraHeaders?: Record<string, string>): Promise<T> {
+    refuseDeletion(method, params);
     // Rate-limit refusals are retried for as long as it takes. They only make a batch slower.
     for (;;) {
       await this.pacer.acquire(cost, this.opts.onWait);
@@ -127,7 +142,7 @@ export class MetaClient {
     const headers: Record<string, string> = { Authorization: `Bearer ${this.opts.token}`, ...extraHeaders };
     const signal = AbortSignal.timeout(this.opts.timeoutMs ?? 120_000);
     const auth = this.authParams();
-    if (method === "GET" || method === "DELETE") {
+    if (method === "GET") {
       const q = encodeParams({ ...(params as Params), ...auth });
       const qs = q.toString();
       return this.f(this.url(path) + (qs ? `?${qs}` : ""), { method, headers, signal });

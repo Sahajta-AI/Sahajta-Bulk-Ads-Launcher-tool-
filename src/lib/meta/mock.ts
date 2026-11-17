@@ -25,6 +25,12 @@ export interface MockOptions {
   rejectPacMultiText?: boolean;
   /** Keep the fake account in this JSON file, so it survives a worker restart (kill tests). */
   stateFile?: string;
+  /** Allow ACTIVE status (tests of "turn on" and go-live). Off by default: any ACTIVE is a test failure. */
+  allowActive?: boolean;
+  /** Add a campaign-budget campaign (c2, ₹1,000 a day) with an ad set (as3), budgets on c1/as1, and fake results. */
+  richAccount?: boolean;
+  /** The ad account may not use the Page's Instagram account: refuse creatives with 200/1815199. */
+  igNotAllowed?: boolean;
   /** Ad accounts the Facebook login shows (Connect Meta). Default: the practice account and one disabled account. */
   adAccounts?: { id: string; name: string; account_status: number; business?: { id: string; name: string } }[];
 }
@@ -57,6 +63,13 @@ export class MockMeta {
     this.add("adset", { id: "as2", name: "Dynamic creative ad set", campaign_id: "c1", status: "PAUSED", is_dynamic_creative: true, effective_status: "PAUSED" });
     this.add("page", { id: "p1", name: "Sahajta AI" });
     this.add("ig", { id: "ig1", username: "sahajta.ai" });
+    if (o.richAccount) {
+      const t = { geo_locations: { countries: ["IN"] }, age_min: 25, age_max: 55, targeting_automation: { advantage_audience: 0 } };
+      Object.assign(this.objects.get("as1")!, { daily_budget: "50000", optimization_goal: "LEAD_GENERATION", billing_event: "IMPRESSIONS", destination_type: "ON_AD", bid_strategy: "LOWEST_COST_WITHOUT_CAP", targeting: t, promoted_object: { page_id: "p1" } });
+      this.add("campaign", { id: "c2", name: "CBO campaign", status: "PAUSED", objective: "OUTCOME_LEADS", daily_budget: "100000", bid_strategy: "LOWEST_COST_WITHOUT_CAP", special_ad_categories: [] });
+      this.add("adset", { id: "as3", name: "CBO ad set", campaign_id: "c2", status: "ACTIVE", is_dynamic_creative: false, effective_status: "CAMPAIGN_PAUSED", optimization_goal: "LEAD_GENERATION", billing_event: "IMPRESSIONS", targeting: t });
+      this.add("adset", { id: "as4", name: "Min-spend template", campaign_id: "c1", status: "PAUSED", is_dynamic_creative: false, effective_status: "PAUSED", daily_budget: "80000", daily_min_spend_target: "70000", optimization_goal: "LEAD_GENERATION", billing_event: "IMPRESSIONS", targeting: t });
+    }
   }
 
   private add(type: string, o: Obj) {
@@ -254,9 +267,33 @@ export class MockMeta {
       }
     }
 
+    if (path === "search" && method === "GET") {
+      if (p.type === "adinterest") return ok({ data: [{ id: "6003", name: `Real estate (${String(p.q)})`, audience_size_lower_bound: 1000000 }] });
+      return ok({ data: [{ key: "1234", name: String(p.q), type: "city", country_code: "IN" }] });
+    }
+    if (first === act && method === "GET" && edge === "insights") {
+      const level = String(p.level ?? "ad");
+      const list = level === "account" ? [{ id: act, name: "acct" }] : this.of(level === "adset" ? "adset" : level);
+      const rows = list.map((o, i) => ({
+        [`${level}_id`]: o.id,
+        [`${level}_name`]: o.name,
+        spend: String(1000 + i * 100),
+        impressions: String(50000 + i),
+        reach: "30000",
+        clicks: "900",
+        inline_link_clicks: "600",
+        ctr: "1.8",
+        cpm: "20",
+        actions: [{ action_type: "lead", value: String(20 + i) }, { action_type: "landing_page_view", value: "400" }],
+        cost_per_action_type: [{ action_type: "lead", value: String((1000 + i * 100) / (20 + i)) }],
+        date_start: "2026-11-10",
+      }));
+      return ok({ data: rows, paging: { cursors: {} } });
+    }
     if (first === act && method === "GET") {
       const typeOf: Record<string, string> = { campaigns: "campaign", adsets: "adset", ads: "ad", adcreatives: "creative", promote_pages: "page", instagram_accounts: "ig" };
-      if (!edge) return ok({ id: act, name: "Sahajta AI (mock)", currency: "INR", account_status: 1 });
+      if (!edge) return ok({ id: act, name: "Sahajta AI (mock)", currency: "INR", timezone_name: "Asia/Kolkata", account_status: 1 });
+      if (edge === "instagram_accounts" && this.o.igNotAllowed) return ok({ data: [], paging: { cursors: {} } });
       const t = typeOf[edge];
       if (!t) return fail(`Unknown edge ${edge}`);
       if (edge === "adcreatives" && p.filtering && this.o.noCreativeFilter) return fail("Filtering is not supported on this edge");
@@ -315,33 +352,48 @@ export class MockMeta {
         const afs = p.asset_feed_spec as { asset_customization_rules?: unknown[]; bodies?: unknown[] } | undefined;
         if (this.o.rejectPacMultiText && afs?.asset_customization_rules && (afs.bodies?.length ?? 0) > 1) return fail("Invalid parameter: body_label must refer to one body", 100);
         if ((p.execution_options as string[] | undefined)?.includes("validate_only")) return ok({ success: true });
-        if (!String(p.name ?? "").includes("[L:")) return fail("Test guard: creative name has no launch key");
+        const fromPost = !!(p.object_story_id || p.source_instagram_media_id);
+        const oss = p.object_story_spec as { instagram_user_id?: string } | undefined;
+        if (this.o.igNotAllowed && oss?.instagram_user_id) return { status: 400, body: { error: { message: "Permissions error", code: 200, error_subcode: 1815199, error_user_title: "No permission to use this Instagram account", error_user_msg: "The ad account is not allowed to advertise with this Instagram account." } } };
+        if (!fromPost && !String(p.name ?? "").includes("[L:")) return fail("Test guard: creative name has no launch key");
         const dof = (p.degrees_of_freedom_spec as { creative_features_spec?: Record<string, unknown> } | undefined)?.creative_features_spec ?? {};
         if ("standard_enhancements" in dof) return fail("standard_enhancements is deprecated");
         const id = this.newId();
-        this.add("creative", { id, name: String(p.name), body: p, degrees_of_freedom_spec: { creative_features_spec: { ...dof, new_feature_june_2026: { enroll_status: "OPT_OUT" } } } });
+        this.add("creative", { id, name: String(p.name), body: p, object_story_id: p.object_story_id, degrees_of_freedom_spec: { creative_features_spec: { ...dof, new_feature_june_2026: { enroll_status: "OPT_OUT" } } } });
         return ok({ id });
       }
       if (edge === "ads") {
-        if (p.status !== "PAUSED") throw new Error(`TEST GUARD: ad created with status ${String(p.status)}`);
-        if (!String(p.name ?? "").includes("[L:")) return fail("Test guard: ad name has no launch key");
+        if (p.status !== "PAUSED" && !this.o.allowActive) throw new Error(`TEST GUARD: ad created with status ${String(p.status)}`);
+        const cr = this.objects.get((p.creative as { creative_id: string }).creative_id);
+        if (!cr?.object_story_id && !(cr?.body as { source_instagram_media_id?: string } | undefined)?.source_instagram_media_id && !String(p.name ?? "").includes("[L:")) return fail("Test guard: ad name has no launch key");
         if (!this.objects.get(String(p.adset_id))) return fail("Ad set does not exist");
         const creativeId = (p.creative as { creative_id: string }).creative_id;
         if (!this.objects.get(creativeId)) return fail("Creative does not exist");
         const id = this.newId();
-        this.add("ad", { id, name: String(p.name), adset_id: String(p.adset_id), creative_id: creativeId, status: "PAUSED", effective_status: "PENDING_REVIEW" });
+        this.add("ad", { id, name: String(p.name), adset_id: String(p.adset_id), creative_id: creativeId, status: String(p.status), effective_status: "PENDING_REVIEW" });
         return ok({ id });
       }
       if (edge === "campaigns") {
-        if (p.status !== "PAUSED") throw new Error("TEST GUARD: campaign not paused");
+        if (p.status !== "PAUSED" && !this.o.allowActive) throw new Error("TEST GUARD: campaign not paused");
+        if (!p.objective) return fail("objective is required");
+        if ((p.execution_options as string[] | undefined)?.includes("validate_only")) return ok({ success: true });
         const id = this.newId();
-        this.add("campaign", { id, name: String(p.name), status: "PAUSED", objective: p.objective, special_ad_categories: p.special_ad_categories });
+        const { execution_options: _e, ...rest } = p;
+        this.add("campaign", { ...rest, id, name: String(p.name), status: String(p.status), objective: p.objective, special_ad_categories: p.special_ad_categories });
         return ok({ id });
       }
       if (edge === "adsets") {
-        if (p.status !== "PAUSED") throw new Error("TEST GUARD: ad set not paused");
+        if (p.status !== "PAUSED" && !this.o.allowActive) throw new Error("TEST GUARD: ad set not paused");
+        const camp = this.objects.get(String(p.campaign_id));
+        if (!camp) return fail("Campaign does not exist");
+        const cbo = !!(Number(camp.daily_budget) || Number(camp.lifetime_budget));
+        if (cbo && (p.daily_budget || p.lifetime_budget)) return fail("Can't set an ad set budget in a campaign with campaign budget", 100);
+        if (!cbo && !p.daily_budget && !p.lifetime_budget) return fail("Ad set needs a budget", 100);
+        if (!p.optimization_goal) return fail("optimization_goal is required");
+        if ((p.execution_options as string[] | undefined)?.includes("validate_only")) return ok({ success: true });
         const id = this.newId();
-        this.add("adset", { id, name: String(p.name), campaign_id: String(p.campaign_id), status: "PAUSED", is_dynamic_creative: false, effective_status: "PAUSED" });
+        const { execution_options: _e, ...rest } = p;
+        this.add("adset", { ...rest, id, name: String(p.name), campaign_id: String(p.campaign_id), status: String(p.status), is_dynamic_creative: false, effective_status: String(p.status) });
         return ok({ id });
       }
     }
@@ -349,6 +401,14 @@ export class MockMeta {
     const obj = this.objects.get(first);
     if (!obj) return fail(`Object ${first} does not exist`, 100);
 
+    if (method === "GET" && edge === "adsets") {
+      return ok({ data: this.of("adset").filter((a) => a.campaign_id === obj.id).map((a) => this.fields(a, p)), paging: { cursors: {} } });
+    }
+    if (method === "GET" && edge === "ads") {
+      const list = this.of("ad").filter((a) => a.adset_id === obj.id).filter(this.nameFilter(p));
+      if (p.summary) return ok({ data: list.slice(0, 1).map((a) => this.fields(a, p)), summary: { total_count: list.length }, paging: { cursors: {} } });
+      return ok({ data: list.map((a) => this.fields(a, p)), paging: { cursors: {} } });
+    }
     if (method === "GET" && edge === "thumbnails") {
       return ok({ data: this.o.noThumbnails ? [] : [{ id: `${obj.id}_t`, uri: `https://mock/thumb/${obj.id}.jpg`, is_preferred: true }] });
     }
@@ -358,21 +418,31 @@ export class MockMeta {
       return ok(this.fields(obj, p));
     }
     if (method === "POST" && edge === "copies") {
-      if (p.status_option !== "PAUSED") throw new Error("TEST GUARD: ad set copy not paused");
+      if (p.status_option !== "PAUSED") throw new Error("TEST GUARD: copy not paused");
       const r = (p.rename_options as { rename_suffix?: string } | undefined) ?? {};
       const id = this.newId();
-      this.add("adset", { ...obj, id, name: `${obj.name}${r.rename_suffix ?? " - Copy"}`, status: "PAUSED", effective_status: "PAUSED" });
+      if (obj._type === "campaign") {
+        this.add("campaign", { ...obj, id, name: `${obj.name}${r.rename_suffix ?? " - Copy"}`, status: "PAUSED" });
+        if (p.deep_copy) for (const a of this.of("adset").filter((x) => x.campaign_id === obj.id)) this.add("adset", { ...a, id: this.newId(), campaign_id: id, status: "PAUSED" });
+        return ok({ copied_campaign_id: id, ad_object_ids: [{ ad_object_type: "campaign", source_id: obj.id, copied_id: id }] });
+      }
+      const target = this.objects.get(String(p.campaign_id ?? obj.campaign_id));
+      if (target && (Number(target.daily_budget) || Number(target.lifetime_budget)) && Number(obj.daily_min_spend_target)) {
+        return { status: 400, body: { error: { message: "Invalid parameter", code: 100, error_subcode: 1885648, error_user_title: "Minimum spend limit is higher than campaign budget", error_user_msg: "Your ad sets' combined minimum spend is higher than your campaign budget." } } };
+      }
+      this.add("adset", { ...obj, id, campaign_id: target?.id ?? obj.campaign_id, name: `${obj.name}${r.rename_suffix ?? " - Copy"}`, status: "PAUSED", effective_status: "PAUSED" });
       return ok({ copied_adset_id: id, ad_object_ids: [{ ad_object_type: "ad_set", source_id: obj.id, copied_id: id }] });
     }
     if (method === "POST" && !edge) {
-      if (p.status && p.status !== "PAUSED") throw new Error(`TEST GUARD: tried to set ${obj.id} to ${String(p.status)}`);
+      if (p.status && p.status !== "PAUSED" && !this.o.allowActive) throw new Error(`TEST GUARD: tried to set ${obj.id} to ${String(p.status)}`);
+      if ((p.execution_options as string[] | undefined)?.includes("validate_only")) return ok({ success: true });
+      const { execution_options: _e, ...rest } = p;
+      Object.assign(obj, rest);
       if (p.name) obj.name = String(p.name);
+      if (p.status) obj.effective_status = String(p.status);
       return ok({ success: true });
     }
-    if (method === "DELETE") {
-      this.objects.delete(obj.id);
-      return ok({ success: true });
-    }
+    if (method === "DELETE") throw new Error("TEST GUARD: something tried to DELETE in Meta");
     return fail(`Mock has no route for ${method} ${path}`);
   }
 

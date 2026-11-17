@@ -151,16 +151,10 @@ async function validateWorstCase(client: ReturnType<typeof clientFor>, accountDb
 }
 
 async function cleanup(client: ReturnType<typeof clientFor>) {
-  const keep = db().prepare("SELECT key FROM batches WHERE status = 'done' AND source_label LIKE 'TEST%' ORDER BY id DESC LIMIT 1").get() as { key: string } | undefined;
+  // The launcher never deletes anything in Meta (the client refuses it). Old TEST_ ads stay
+  // paused inside the paused TEST_ campaign; delete them by hand in Ads Manager if wanted.
   const ads = await client.getAll<{ id: string; name: string }>(`${client.accountId}/ads`, { fields: "id,name", filtering: [{ field: "name", operator: "STARTS_WITH", value: PREFIX }] });
-  let deleted = 0;
-  for (const ad of ads) {
-    if (!ad.name.startsWith(PREFIX)) continue; // double check: never delete anything without the prefix
-    if (keep && ad.name.includes(`[L:${keep.key}-`)) continue;
-    await client.delete(ad.id);
-    deleted++;
-  }
-  log(`Cleanup: deleted ${deleted} old TEST_ ad(s); kept batch ${keep?.key ?? "(none)"}.`);
+  log(`Cleanup: ${ads.length} TEST_ ad(s) stay paused. The launcher does not delete anything.`);
 }
 
 async function main() {

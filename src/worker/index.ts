@@ -10,6 +10,8 @@ import { clientFor } from "@/lib/meta/factory";
 import { realClock } from "@/lib/meta/pacer";
 import { anyFiles } from "@/lib/sources/drive";
 import { getBatch, logEvent, updateBatch } from "@/lib/store";
+import { runPlan } from "@/lib/manage/plan";
+import { queueGoLive } from "@/lib/manage/golive";
 
 // The worker: takes jobs from the jobs table in two lanes, each one job at a time.
 //   launch lane: launch -> run a batch to the end (paced, resumable)
@@ -39,7 +41,18 @@ async function runJob(job: Job) {
       const freed = removeBatchFiles(batch.id);
       if (freed) log(`batch ${batch.key}: removed ${Math.round(freed / 1024 ** 2)} MB of creatives from the server`);
     }
+    // "Launch now" or "at a time": turn the new ads on once every ad is in.
+    const golive = await queueGoLive(batch.id);
+    if (golive) log(`batch ${batch.key}: ${golive}`);
     enqueue("review", batch.id, Date.now() + REVIEW_SCHEDULE_MIN[0] * 60_000);
+    enqueue("backup", null);
+    return;
+  }
+  if (job.kind === "plan") {
+    const plan = db().prepare("SELECT id, key, ad_account_id, status FROM plans WHERE id = ?").get(job.batch_id) as { id: number; key: string; ad_account_id: number; status: string } | undefined;
+    if (!plan || plan.status === "cancelled") return;
+    const res = await runPlan(plan.id, { client: clientFor(plan.ad_account_id), clock: realClock });
+    log(`plan ${plan.key}: ${res.done} step(s) done, ${res.failed} failed`);
     enqueue("backup", null);
     return;
   }
@@ -82,6 +95,9 @@ async function lane(kinds: readonly Job["kind"][], everyLoop?: () => void) {
         updateBatch(job.batch_id, { status: done ? "partial" : "failed", finished_at: new Date().toISOString() });
         logEvent(job.batch_id, null, "error", `The launch stopped: ${msg}`);
       }
+      if (job.kind === "plan" && job.batch_id) {
+        db().prepare("UPDATE plans SET status = CASE WHEN status = 'cancelled' THEN status ELSE 'failed' END, finished_at = datetime('now') WHERE id = ?").run(job.batch_id);
+      }
     }
   }
 }
@@ -111,7 +127,7 @@ async function main() {
       if (swept.freedGb) log(`nightly cleanup: ${swept.freedGb} GB freed`);
     }
   };
-  await Promise.all([lane(LANES.launch), lane(LANES.other, nightly)]);
+  await Promise.all([lane(LANES.launch), lane(LANES.other, nightly), lane(LANES.plan)]);
 }
 
 main().catch((e) => {

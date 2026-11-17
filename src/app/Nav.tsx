@@ -5,6 +5,8 @@ import { signOutAction } from "./actions";
 
 const LINKS = [
   { href: "/", label: "New batch", on: (p: string) => p === "/" },
+  { href: "/manage", label: "Campaigns", on: (p: string) => p.startsWith("/manage") || p.startsWith("/plans") },
+  { href: "/results", label: "Results", on: (p: string) => p.startsWith("/results") },
   { href: "/history", label: "History", on: (p: string) => p.startsWith("/history") || p.startsWith("/batches") },
   { href: "/settings", label: "Settings", on: (p: string) => p.startsWith("/settings") },
 ];

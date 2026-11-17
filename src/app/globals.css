@@ -203,3 +203,31 @@ details.panel summary { margin-top: 0; }
   .kv dd { margin-bottom: 8px; }
   .panel > header .hint { margin-left: 0; }
 }
+
+/* Page / Instagram identity (photo, name, ID, link) */
+.identity { display: flex; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); min-width: 0; }
+.identity img, .identity-blank { width: 36px; height: 36px; border-radius: 50%; flex: none; object-fit: cover; }
+.identity-blank { display: grid; place-items: center; background: var(--line); color: var(--muted); font-size: 12px; font-weight: 600; }
+.identity .grow { min-width: 0; overflow-wrap: anywhere; }
+.identity-warn { color: var(--err); font-size: 13px; margin-top: 4px; }
+.identities { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; margin: 8px 0; }
+
+/* Launch step: when the ads go live, extra ad sets, the summary */
+.golive { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.golive label { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; cursor: pointer; }
+.golive label.on { border-color: var(--text, #111); box-shadow: 0 0 0 1px var(--text, #111); }
+.golive input { position: absolute; opacity: 0; pointer-events: none; }
+.golive small { color: var(--muted); }
+.extra-adsets { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 16px; margin-top: 8px; }
+.total-budget { margin: 12px 0; padding: 12px 14px; border-radius: 8px; background: var(--line); font-size: 16px; }
+.total-budget strong { font-size: 20px; }
+.spend-confirm { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.spend-confirm input { max-width: 140px; }
+@media (max-width: 760px) { .golive { grid-template-columns: 1fr; } }
+
+/* Five menu links: on phones the top bar scrolls sideways instead of widening the page. */
+@media (max-width: 760px) {
+  nav.top { overflow-x: auto; scrollbar-width: none; }
+  nav.top::-webkit-scrollbar { display: none; }
+  nav.top .nav, nav.top .account { white-space: nowrap; flex: none; }
+}

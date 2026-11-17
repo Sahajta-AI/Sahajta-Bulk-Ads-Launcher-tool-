@@ -31,6 +31,9 @@ export function removeBatchFiles(batchId: number): number {
     // Only files the launcher itself stored: never a folder someone pointed the CLI at.
     const inside = [config.filesDir, config.uploadsDir].some((d) => path.resolve(r.local_path).startsWith(path.resolve(d) + path.sep));
     if (!inside) continue;
+    // Batches launched together into several ad sets share uploaded files: keep a file while another needs it.
+    const shared = db().prepare("SELECT 1 FROM assets a JOIN batches b ON b.id = a.batch_id WHERE a.local_path = ? AND a.batch_id != ? AND b.status NOT IN ('done')").get(r.local_path, batchId);
+    if (shared) continue;
     for (const f of [r.local_path, `${r.local_path}.json`, `${r.local_path}.part`]) {
       try {
         freed += fs.statSync(f).size;

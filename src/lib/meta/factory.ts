@@ -20,6 +20,9 @@ export function mockMeta(): MockMeta {
     blockMs: 60_000,
     stateFile: process.env.META_MOCK_STATE || undefined,
     rejectPacMultiText: process.env.META_MOCK_REJECT_PAC_TEXTS === "1",
+    // Practice mode: budgets and a campaign-budget campaign to try plans on, and "turn on" works.
+    richAccount: true,
+    allowActive: true,
   });
   return g.__mockMeta;
 }

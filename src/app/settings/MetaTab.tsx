@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { MetaAssets, MetaStatus } from "@/lib/meta/connect";
+import type { InstagramChoice, MetaAssets, MetaStatus } from "@/lib/meta/connect";
+import type { ConnectionSummary } from "@/lib/service";
 import { api } from "../client-api";
+import IdentityCard from "../IdentityCard";
 
 // Settings → Meta connection. The person who uses the launcher connects Meta here:
 // Connect Meta (Facebook login) or paste a token → pick ad account, Page, Instagram.
@@ -12,13 +14,19 @@ const day = (ms: number) => new Date(ms).toLocaleDateString("en-IN", { day: "num
 function Picker({ onDone, onCancel }: { onDone: () => void; onCancel?: () => void }) {
   const [assets, setAssets] = useState<MetaAssets | null>(null);
   const [sel, setSel] = useState({ adAccountId: "", pageId: "", igUserId: "" });
-  const [instagram, setInstagram] = useState<{ id: string; username: string }[]>([]);
+  const [instagram, setInstagram] = useState<InstagramChoice[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!sel.adAccountId) return setInstagram([]);
-    api<{ id: string; username: string }[]>(`/api/meta/instagram?adAccountId=${encodeURIComponent(sel.adAccountId)}`).then(setInstagram).catch(() => setInstagram([]));
+    api<InstagramChoice[]>(`/api/meta/instagram?adAccountId=${encodeURIComponent(sel.adAccountId)}`)
+      .then((list) => {
+        setInstagram(list);
+        // Never pre-pick an Instagram account the ad account may not use.
+        setSel((s) => (list.find((i) => i.id === s.igUserId)?.allowed === false ? { ...s, igUserId: "" } : s));
+      })
+      .catch(() => setInstagram([]));
   }, [sel.adAccountId]);
 
   useEffect(() => {
@@ -43,6 +51,11 @@ function Picker({ onDone, onCancel }: { onDone: () => void; onCancel?: () => voi
       setBusy(false);
     }
   }
+
+  const page = assets?.pages.find((p) => p.id === sel.pageId);
+  const ig = instagram.find((i) => i.id === sel.igUserId);
+  const acct = assets?.adAccounts.find((a) => a.id === sel.adAccountId);
+  const blocked = instagram.filter((i) => !i.allowed);
 
   if (!assets) return <div className="panel">{error ? <div className="msg error">{error}</div> : <p className="muted">Asking Meta what this login can use…</p>}</div>;
   const noAds = assets.missing.includes("ads_management");
@@ -75,16 +88,27 @@ function Picker({ onDone, onCancel }: { onDone: () => void; onCancel?: () => voi
         <label><span>Facebook Page (the ads show this name)</span>
           <select value={sel.pageId} onChange={(e) => { const p = assets.pages.find((x) => x.id === e.target.value); setSel({ ...sel, pageId: e.target.value, igUserId: p?.instagram?.id ?? "" }); }}>
             <option value="">Pick a Page</option>
-            {assets.pages.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {assets.pages.map((p) => <option key={p.id} value={p.id}>{p.name} · ID {p.id}</option>)}
           </select>
         </label>
         <label><span>Instagram account</span>
           <select value={sel.igUserId} onChange={(e) => setSel({ ...sel, igUserId: e.target.value })}>
             <option value="">None (use the Facebook Page)</option>
-            {instagram.map((i) => <option key={i.id} value={i.id}>@{i.username}</option>)}
+            {instagram.map((i) => <option key={i.id} value={i.id} disabled={!i.allowed}>@{i.username} · ID {i.id}{i.allowed ? "" : " (not allowed for this ad account)"}</option>)}
           </select>
         </label>
       </div>
+      <div className="identities">
+        {page && <IdentityCard kind="page" name={page.name} id={page.id} pictureUrl={page.pictureUrl} link={page.link} />}
+        {ig && <IdentityCard kind="instagram" name={ig.username} id={ig.id} pictureUrl={ig.pictureUrl} link={ig.link} />}
+      </div>
+      {blocked.length > 0 && acct && (
+        <div className="msg warning">
+          {blocked.map((b) => `@${b.username}`).join(", ")} {blocked.length > 1 ? "are" : "is"} linked to your Page, but the ad account &quot;{acct.name}&quot; is not allowed to use {blocked.length > 1 ? "them" : "it"}, so Meta would refuse every ad.
+          To use it: Meta Business settings → Accounts → Instagram accounts → pick the account → Assign assets → add the ad account &quot;{acct.name}&quot;, then click Connect Meta again.
+          Until then, pick &quot;None&quot;: on Instagram the ads then show your Facebook Page&apos;s name and picture.
+        </div>
+      )}
       {error && <div className="msg error">{error}</div>}
       <div className="row" style={{ marginTop: 12 }}>
         <button className="primary" disabled={busy || noAds || !sel.adAccountId || !sel.pageId} onClick={save}>{busy ? "Saving…" : "Save"}</button>
@@ -96,6 +120,7 @@ function Picker({ onDone, onCancel }: { onDone: () => void; onCancel?: () => voi
 
 export default function MetaTab() {
   const [status, setStatus] = useState<MetaStatus | null>(null);
+  const [conn, setConn] = useState<ConnectionSummary | null>(null);
   const [picking, setPicking] = useState(false);
   const [notice, setNotice] = useState<{ kind: "error" | "ok" | "info"; text: string } | null>(null);
   const [token, setToken] = useState("");
@@ -110,6 +135,10 @@ export default function MetaTab() {
     if (q.has("meta") || q.has("meta_error")) history.replaceState(null, "", "/settings#meta");
     load().catch((e: Error) => setNotice({ kind: "error", text: e.message }));
   }, [load]);
+
+  useEffect(() => {
+    if (status?.connected && !picking) api<ConnectionSummary>("/api/connection").then(setConn).catch(() => setConn(null));
+  }, [status?.connected, picking]);
 
   async function useToken() {
     setBusy(true);
@@ -143,8 +172,15 @@ export default function MetaTab() {
             <span className={`status ${status.expired ? "failed" : status.expiresSoon ? "partial" : "done"}`}>{status.expired ? "Expired" : "Connected"}</span>
           </header>
           <div className="list-item"><span className="grow">Ad account</span>{status.adAccount!.name} <small>({status.adAccount!.id.replace("act_", "")})</small></div>
-          <div className="list-item"><span className="grow">Facebook Page</span>{status.page ?? "Not set"}</div>
-          <div className="list-item"><span className="grow">Instagram account</span>{status.instagram ?? "None"}</div>
+          <div className="identities">
+            {status.pageId
+              ? <IdentityCard kind="page" name={conn?.page?.name ?? status.page ?? status.pageId} id={status.pageId} pictureUrl={conn?.page?.pictureUrl} link={status.pageLink} />
+              : <div className="msg warning">No Facebook Page picked yet.</div>}
+            {status.igUserId
+              ? <IdentityCard kind="instagram" name={conn?.instagram?.username ?? status.instagram ?? status.igUserId} id={status.igUserId} pictureUrl={conn?.instagram?.pictureUrl} link={status.igLink} warning={conn?.instagram?.allowed === false ? "This ad account is not allowed to use this Instagram account, so Meta refuses the ads. See below." : null} />
+              : <div className="list-item"><span className="grow">Instagram account</span>None (Instagram ads show the Facebook Page)</div>}
+          </div>
+          {conn?.problems.map((p) => <div className="msg error" key={p}>{p}</div>)}
           <div className="list-item">
             <span className="grow">Login</span>
             {status.expired ? <span style={{ color: "var(--err)" }}>Expired on {day(status.expiresAt!)}. Click Reconnect Meta.</span>
@@ -168,7 +204,7 @@ export default function MetaTab() {
             <li>Facebook asks which ad accounts, Pages and Instagram accounts the launcher may use. Tick the ad account you want (for example the agency&apos;s) and your Page.</li>
             <li>Back here, pick the ad account, Page and Instagram account. Done.</li>
           </ol>
-          <p className="muted">The launcher only creates paused ads. You switch them on yourself in Ads Manager.{status.practice ? " Practice mode: this connects the fake account, and Facebook does not open." : ""}</p>
+          <p className="muted">The launcher creates ads paused unless you choose to launch them on, and it never deletes anything.{status.practice ? " Practice mode: this connects the fake account, and Facebook does not open." : ""}</p>
           <a className="button primary big" href="/api/meta/connect" aria-disabled={!status.ready}>Connect Meta</a>
           <details style={{ marginTop: 16 }}>
             <summary>Paste a token instead</summary>

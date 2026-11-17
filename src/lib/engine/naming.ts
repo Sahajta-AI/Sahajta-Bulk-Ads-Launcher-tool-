@@ -12,6 +12,9 @@ export interface NameContext {
   copy?: string;
   campaign?: string;
   adset?: string;
+  persona?: string;
+  objective?: string;
+  budget?: string;
 }
 
 export const NAME_TOKENS: { token: string; meaning: string }[] = [
@@ -24,7 +27,16 @@ export const NAME_TOKENS: { token: string; meaning: string }[] = [
   { token: "{campaign}", meaning: "Campaign name" },
   { token: "{adset}", meaning: "Ad set name" },
   { token: "{batch}", meaning: "Batch code" },
+  { token: "{persona}", meaning: "Persona you type for the batch, the plan or one ad set" },
+  { token: "{objective}", meaning: "Campaign objective in short, e.g. LEADS (campaign and ad set names)" },
+  { token: "{budget}", meaning: "Daily or lifetime budget, e.g. 1500 (campaign and ad set names)" },
 ];
+
+/** Meta fills these in itself, in links only (UTM parameters): the names as they are in Ads Manager. */
+export const META_URL_PARAMS = ["{{campaign.name}}", "{{campaign.id}}", "{{adset.name}}", "{{adset.id}}", "{{ad.name}}", "{{ad.id}}", "{{placement}}", "{{site_source_name}}"];
+
+/** UTM parameters for new copy templates: each lead shows which campaign, ad set and ad brought it. */
+export const DEFAULT_UTM = "utm_source=facebook&utm_medium=paid&utm_campaign={{campaign.name}}&utm_term={{adset.name}}&utm_content={{ad.name}}&utm_id={{ad.id}}";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 
@@ -54,6 +66,9 @@ function tokenValue(name: string, arg: string | undefined, ctx: NameContext): st
     case "copy": return ctx.copy ?? "";
     case "campaign": return ctx.campaign ?? "";
     case "adset": return ctx.adset ?? "";
+    case "persona": return ctx.persona ?? "";
+    case "objective": return ctx.objective ?? "";
+    case "budget": return ctx.budget ?? "";
     default: return undefined; // unknown tokens stay as typed
   }
 }

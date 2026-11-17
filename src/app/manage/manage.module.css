@@ -1,0 +1,47 @@
+/* Extra styles for the Campaigns page and the plan page. Everything else comes from globals.css. */
+
+.toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.title { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.title h2 { word-break: break-word; }
+.meta { font-size: 13.5px; color: var(--muted); margin-top: 4px; }
+.adsets { margin-top: 14px; border-top: 1px solid var(--line); }
+.adset { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.adset:last-child { border-bottom: none; }
+.adset h3 { font-size: 14.5px; font-weight: 600; margin: 0; word-break: break-word; }
+.adset .kvSmall { margin-top: 8px; }
+.kvSmall { display: grid; grid-template-columns: 110px 1fr; gap: 4px 12px; font-size: 13.5px; }
+.kvSmall dt { color: var(--muted); }
+.kvSmall dd { margin: 0; color: var(--ink-soft); }
+.form { background: var(--soft); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-top: 12px; }
+.form h3 { font-size: 15px; font-weight: 600; margin: 0 0 12px; }
+.form .row { margin-bottom: 12px; }
+.form .row > label { min-width: 160px; }
+.section { font-size: 13px; font-weight: 600; color: var(--muted); margin: 16px 0 8px; text-transform: none; }
+.picked { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.tag { display: inline-flex; gap: 6px; align-items: center; background: #fff; border: 1px solid var(--line-strong); border-radius: 99px; padding: 2px 4px 2px 10px; font-size: 13px; }
+.tag button { height: 22px; width: 22px; padding: 0; border: none; background: none; color: var(--muted); }
+.results { background: #fff; border: 1px solid var(--line); border-radius: 8px; margin-top: 6px; max-height: 220px; overflow: auto; }
+.results button { display: block; width: 100%; text-align: left; border: none; border-radius: 0; border-bottom: 1px solid var(--line); height: auto; padding: 8px 12px; white-space: normal; font-weight: 400; }
+.results button:last-child { border-bottom: none; }
+.checkGrid { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.radios { display: flex; flex-wrap: wrap; gap: 8px 18px; }
+.copyTable input { height: 34px; min-width: 110px; }
+.copyTable td { padding: 6px 4px; }
+.big { font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+.totals { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-top: 8px; }
+.totals > div { background: var(--soft); border-radius: 10px; padding: 12px 14px; }
+.totals small { display: block; margin-bottom: 2px; }
+.spend { background: var(--err-bg); color: var(--err); border: 1px solid #f2c9c1; border-radius: 10px; padding: 14px 16px; margin-top: 14px; font-size: 14px; }
+.spend ul { margin: 6px 0 8px; padding-left: 18px; }
+.stepLines { margin: 4px 0 0; padding-left: 18px; font-size: 13.5px; color: var(--ink-soft); }
+.ids { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--ink-soft); word-break: break-all; }
+.confirmInput { max-width: 240px; font-size: 18px !important; font-weight: 600; }
+.bulkTable td, .bulkTable th { font-size: 13px; padding: 6px; white-space: nowrap; }
+.rowError td { background: var(--err-bg); }
+
+@media (max-width: 760px) {
+  .kvSmall { grid-template-columns: 1fr; gap: 0; }
+  .kvSmall dd { margin-bottom: 6px; }
+  .big { font-size: 26px; }
+}

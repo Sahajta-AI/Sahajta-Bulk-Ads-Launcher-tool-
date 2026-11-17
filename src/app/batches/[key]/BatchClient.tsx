@@ -5,13 +5,15 @@ import type { BatchView, CampaignInfo } from "@/lib/service";
 import type { Check } from "@/lib/types";
 import { api, lastUsed } from "../../client-api";
 import Groups from "./Groups";
+import LaunchStep, { useSummary } from "./LaunchStep";
+import CopySheet from "./CopySheet";
 import PreviewTable from "./PreviewTable";
 import Progress from "./Progress";
 import Uploader from "./Uploader";
 
 export interface Templates {
   copy: { id: number; name: string; primaryTexts: string[]; headlines: string[]; description: string; cta: string; linkUrl: string; utmTemplate: string }[];
-  naming: { id: number; name: string; kind: "ad" | "adset"; pattern: string; is_default: number }[];
+  naming: { id: number; name: string; kind: "ad" | "adset" | "campaign"; pattern: string; is_default: number }[];
   presets: { id: number; name: string; pageName: string; pageId: string; igName: string; igUserId: string; enhancementsOn: string[]; multiAdvertiser: boolean; isDefault: boolean }[];
   tokens: { token: string; meaning: string }[];
   ctaTypes: string[];
@@ -37,6 +39,10 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
   const [busy, setBusy] = useState("");
   const [accept, setAccept] = useState(false);
   const [uploading, setUploading] = useState(0);
+  const [spendTyped, setSpendTyped] = useState("");
+  const st = view?.settings;
+  const sumDeps = [batchKey, st?.adsetId, st?.adsetMode, st?.goLive, st?.goLiveAt, st?.presetId, JSON.stringify(st?.extraAdsets ?? []), JSON.stringify(st?.preset ?? null), view?.ads.length, st?.copyTemplateId];
+  const { summary, error: summaryError, loading: summaryLoading } = useSummary(batchKey, sumDeps);
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(async (withDest = false) => {
@@ -142,6 +148,8 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
   const todo = [...p.batchChecks, ...p.ads.flatMap((a) => a.checks)].filter((c) => c.level === "error").map((c) => c.message);
   const todoAll = [...new Set(todo)];
   const todoShort = todoAll.slice(0, 3);
+  const needsSpend = s.goLive !== "paused";
+  const spendLabel = summary?.launch?.spendConfirmation ?? "";
 
   return (
     <>
@@ -229,6 +237,7 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             </div>
           </div>
         ) : null}
+        {view.ads.length > 0 && <CopySheet batchKey={batchKey} onSaved={(v) => setView(v)} />}
       </section>
 
       <section className="panel">
@@ -244,6 +253,10 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
           <label style={{ maxWidth: 220 }}>
             <span>Angle <small>(fills {"{angle}"})</small></span>
             <input defaultValue={s.angle} key={`angle-${s.angle}`} placeholder="e.g. price" onBlur={(e) => e.target.value !== s.angle && patch({ angle: e.target.value })} />
+          </label>
+          <label style={{ maxWidth: 220 }}>
+            <span>Persona <small>(fills {"{persona}"})</small></span>
+            <input defaultValue={s.persona} key={`persona-${s.persona}`} placeholder="e.g. investor" onBlur={(e) => e.target.value !== s.persona && patch({ persona: e.target.value })} />
           </label>
         </div>
         {view.ads[0] && (
@@ -316,12 +329,14 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
         {view.ads.length ? <div className="table-wrap"><PreviewTable view={view} tpl={tpl} batchKey={batchKey} onChange={(v) => setView(v)} /></div> : <p className="muted">Add images or videos in step 1 to see the ads here.</p>}
       </section>
 
+      <LaunchStep view={view} dest={dest} patch={(b) => void patch(b)} summary={summary} summaryError={summaryError} summaryLoading={summaryLoading} />
+
       {error && <div className="msg error" style={{ whiteSpace: "pre-line" }}>{error}</div>}
 
       <div className="launchbar">
         <div className="grow">
           <div className="estimate">
-            <strong>{view.ads.length} ad{view.ads.length === 1 ? "" : "s"}</strong>, created paused · {p.estimate.label}
+            <strong>{view.ads.length * (1 + s.extraAdsets.length)} ad{view.ads.length * (1 + s.extraAdsets.length) === 1 ? "" : "s"}</strong>, {s.goLive === "paused" ? "created paused" : s.goLive === "now" ? "turned on when all are in" : "turned on at the set time"} · {p.estimate.label}
           </div>
           {uploading > 0 ? (
             <small>Wait for the uploads to finish: {uploading} file{uploading === 1 ? "" : "s"} still uploading.</small>
@@ -336,9 +351,15 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             <input type="checkbox" checked={accept} onChange={(e) => setAccept(e.target.checked)} /> I read the warnings
           </label>
         )}
-        <button className="primary big" disabled={blocked || needsAccept || !!busy || uploading > 0}
-          onClick={() => act("launch", () => api<BatchView>(`/api/batches/${batchKey}/launch`, { method: "POST", body: { confirm: true, acceptWarnings: accept } }))}>
-          {busy === "launch" ? "Starting…" : "Launch (paused)"}
+        {needsSpend && !blocked && (
+          <label className="spend-confirm">
+            <small>Turns ads on. Type the total daily budget from the summary ({spendLabel}) to confirm:</small>
+            <input value={spendTyped} onChange={(e) => setSpendTyped(e.target.value)} placeholder={spendLabel || "₹0"} aria-label="Total daily budget" />
+          </label>
+        )}
+        <button className="primary big" disabled={blocked || needsAccept || !!busy || uploading > 0 || (needsSpend && !spendTyped.trim()) || (needsSpend && !summary?.launch)}
+          onClick={() => act("launch", () => api<BatchView>(`/api/batches/${batchKey}/launch`, { method: "POST", body: { confirm: true, acceptWarnings: accept, spendConfirmation: needsSpend ? spendTyped : undefined } }))}>
+          {busy === "launch" ? "Starting…" : s.goLive === "paused" ? "Launch (paused)" : s.goLive === "now" ? "Launch and turn on" : "Launch and schedule"}
         </button>
       </div>
     </>

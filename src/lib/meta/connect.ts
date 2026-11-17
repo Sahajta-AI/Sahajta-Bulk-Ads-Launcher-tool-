@@ -141,8 +141,21 @@ export interface MetaAssets {
   expiresAt: number | null;
   missing: string[];
   adAccounts: { id: string; name: string; business: string; active: boolean; status: string }[];
-  pages: { id: string; name: string; instagram: { id: string; username: string } | null }[];
+  pages: { id: string; name: string; pictureUrl: string | null; link: string; instagram: { id: string; username: string } | null }[];
 }
+
+/** An Instagram account as the pickers show it. `allowed`: the ad account may advertise with it
+ *  (Meta refuses the creative with code 200/1815199 otherwise). */
+export interface InstagramChoice {
+  id: string;
+  username: string;
+  pictureUrl: string | null;
+  link: string;
+  allowed: boolean;
+}
+
+export const pageLink = (id: string) => `https://www.facebook.com/${id}`;
+export const igLink = (username: string) => `https://www.instagram.com/${username}`;
 
 /** What the connected Facebook login may use: ad accounts, Pages and their Instagram accounts. */
 export async function listAssets(email: string): Promise<MetaAssets> {
@@ -150,28 +163,36 @@ export async function listAssets(email: string): Promise<MetaAssets> {
   if (!t) throw new HttpError(409, "Click Connect Meta first.");
   const client = clientWith(graph(), t.token);
   const accounts = await client.getAll<{ id: string; name: string; account_status: number; business?: { name: string } }>("me/adaccounts", { fields: "id,name,account_status,business{name}" });
-  type PageRow = { id: string; name: string; instagram_business_account?: { id: string; username: string } };
+  type PageRow = { id: string; name: string; picture?: { data?: { url?: string } }; instagram_business_account?: { id: string; username: string } };
   // A Page's linked Instagram account needs more permissions than the Page list; without them, list the Pages alone.
   const pages = await client
-    .getAll<PageRow>("me/accounts", { fields: "id,name,instagram_business_account{id,username}" })
+    .getAll<PageRow>("me/accounts", { fields: "id,name,picture{url},instagram_business_account{id,username}" })
+    .catch(() => client.getAll<PageRow>("me/accounts", { fields: "id,name,picture{url}" }))
     .catch(() => client.getAll<PageRow>("me/accounts", { fields: "id,name" }));
   return {
     who: t.who,
     expiresAt: t.expiresAt,
     missing: t.scopes ? PERMISSIONS.filter((p) => !t.scopes!.includes(p)) : [],
     adAccounts: accounts.map((a) => ({ id: a.id, name: a.name, business: a.business?.name ?? "", active: a.account_status === 1, status: ACCOUNT_STATUS[a.account_status] ?? `Status ${a.account_status}` })),
-    pages: pages.map((p) => ({ id: p.id, name: p.name, instagram: p.instagram_business_account ?? null })),
+    pages: pages.map((p) => ({ id: p.id, name: p.name, pictureUrl: p.picture?.data?.url ?? null, link: pageLink(p.id), instagram: p.instagram_business_account ?? null })),
   };
 }
 
-/** Instagram accounts the ad account can advertise with, plus those linked to the Pages. */
-export async function listInstagram(email: string, adAccountId: string): Promise<{ id: string; username: string }[]> {
+/** Instagram accounts the ad account can advertise with (allowed), plus those only linked to
+ *  the Pages (not allowed until someone assigns them to the ad account in Business settings). */
+export async function listInstagram(email: string, adAccountId: string): Promise<InstagramChoice[]> {
   const t = workingToken(email);
   if (!t) throw new HttpError(409, "Click Connect Meta first.");
   const client = clientWith(graph(), t.token);
-  const fromAccount = await client.getAll<{ id: string; username: string }>(`${adAccountId}/instagram_accounts`, { fields: "id,username" }).catch(() => []);
+  type IgRow = { id: string; username: string; profile_pic?: string };
+  const fromAccount = await client
+    .getAll<IgRow>(`${adAccountId}/instagram_accounts`, { fields: "id,username,profile_pic" })
+    .catch(() => client.getAll<IgRow>(`${adAccountId}/instagram_accounts`, { fields: "id,username" }))
+    .catch(() => [] as IgRow[]);
   const fromPages = (await listAssets(email)).pages.map((p) => p.instagram).filter((i): i is { id: string; username: string } => !!i);
-  return [...fromAccount, ...fromPages].filter((x, i, all) => all.findIndex((y) => y.id === x.id) === i);
+  const out: InstagramChoice[] = fromAccount.map((i) => ({ id: i.id, username: i.username, pictureUrl: i.profile_pic ?? null, link: igLink(i.username), allowed: true }));
+  for (const i of fromPages) if (!out.some((o) => o.id === i.id)) out.push({ id: i.id, username: i.username, pictureUrl: null, link: igLink(i.username), allowed: false });
+  return out;
 }
 
 function copyTemplates(from: number, to: number) {
@@ -197,6 +218,12 @@ export async function selectAssets(email: string, sel: { adAccountId: string; pa
   if (!page) throw new HttpError(400, "Pick the Facebook Page the ads should run from.");
   const ig = sel.igUserId ? (await listInstagram(email, acc.id)).find((i) => i.id === sel.igUserId) : undefined;
   if (sel.igUserId && !ig) throw new HttpError(400, "Pick an Instagram account from the list, or none.");
+  if (ig && !ig.allowed) {
+    throw new HttpError(
+      400,
+      `The ad account "${acc.name}" is not allowed to use @${ig.username} yet, so Meta would refuse every ad. In Meta Business settings → Accounts → Instagram accounts → @${ig.username} → Assign assets (Connected assets), add the ad account "${acc.name}", then click Connect Meta again. Or pick "None (use the Facebook Page)".`,
+    );
+  }
 
   const d = db();
   const previous = getAccount();
@@ -250,6 +277,11 @@ export interface MetaStatus {
   adAccount: { id: string; name: string } | null;
   page: string | null;
   instagram: string | null;
+  /** IDs and links for the Page and Instagram account in the default preset. */
+  pageId: string | null;
+  pageLink: string | null;
+  igUserId: string | null;
+  igLink: string | null;
   who: string | null;
   connectedBy: string | null;
   connectedAt: string | null;
@@ -271,6 +303,10 @@ export function metaStatus(email: string): MetaStatus {
     adAccount: connected ? { id: acc!.meta_account_id, name: acc!.name } : null,
     page: connected ? preset?.pageName || preset?.pageId || null : null,
     instagram: connected ? (preset?.igName ? `@${preset.igName}` : preset?.igUserId || null) : null,
+    pageId: connected ? preset?.pageId || null : null,
+    pageLink: connected && preset?.pageId ? pageLink(preset.pageId) : null,
+    igUserId: connected ? preset?.igUserId || null : null,
+    igLink: connected && preset?.igName ? igLink(preset.igName) : null,
     who: connected ? acc!.meta_user_name : null,
     connectedBy: connected ? acc!.connected_by : null,
     connectedAt: connected ? acc!.connected_at : null,

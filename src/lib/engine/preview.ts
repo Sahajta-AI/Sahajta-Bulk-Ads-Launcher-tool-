@@ -111,6 +111,7 @@ export function adNameContext(batch: BatchRow, ad: AdRow, assets: AssetRow[]): N
     copy: copyName ?? "",
     campaign: batch.campaign_name ?? "",
     adset: batch.adset_mode === "existing" ? (batch.adset_name ?? "") : "",
+    persona: batch.persona ?? "",
   };
 }
 
@@ -128,6 +129,8 @@ export function computeNames(batchId: number) {
 
 export interface DestinationInfo {
   adset?: { id: string; name: string; is_dynamic_creative?: boolean; ad_count?: number } | null;
+  /** Set when Meta says the ad account may not use the preset's Instagram account (code 200/1815199). */
+  igProblem?: string;
 }
 
 /** Meta allows at most 50 ads (not archived or deleted) in one ad set. */
@@ -242,6 +245,8 @@ export function checkBatch(batch: BatchRow, dest: DestinationInfo): Check[] {
     });
   }
   if (!preset.pageId) out.push({ level: "error", code: "no_page", message: "Pick a Facebook Page in Meta settings." });
+  if (dest.igProblem) out.push({ level: "error", code: "ig_not_allowed", message: dest.igProblem });
+  if (batch.go_live === "at" && (!batch.go_live_at || Date.parse(batch.go_live_at) < Date.now())) out.push({ level: "error", code: "go_live_time", message: "Pick a time in the future to turn the ads on." });
   if (!preset.igUserId) out.push({ level: "warning", code: "no_instagram", message: "No Instagram account picked. On Instagram, ads will show your Facebook Page's name and picture." });
   const skipped = getAssets(batch.id).filter((a) => a.kind === "unsupported");
   if (skipped.length) {

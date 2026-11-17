@@ -6,7 +6,7 @@ import { db } from "./db";
 
 export interface Job {
   id: number;
-  kind: "launch" | "review" | "backup";
+  kind: "launch" | "review" | "backup" | "plan"; // for "plan", batch_id holds the plan's id
   batch_id: number | null;
   status: "queued" | "running" | "done" | "failed";
   run_after: number;
@@ -25,9 +25,11 @@ export function enqueue(kind: Job["kind"], batchId: number | null, runAfter = Da
   return Number(db().prepare("INSERT INTO jobs (kind, batch_id, run_after) VALUES (?, ?, ?)").run(kind, batchId, runAfter).lastInsertRowid);
 }
 
-export const LANES: Record<"launch" | "other", readonly Job["kind"][]> = {
+export const LANES: Record<"launch" | "other" | "plan", readonly Job["kind"][]> = {
   launch: ["launch"],
   other: ["review", "backup"],
+  // Plans get their own lane, so a plan scheduled for 9:00 doesn't wait behind a 4-hour launch.
+  plan: ["plan"],
 };
 
 export function claimNext(kinds: readonly Job["kind"][], now = Date.now()): Job | undefined {
