@@ -47,6 +47,7 @@ export function httpApi(baseUrl: string, apiKey: string): LauncherApi {
 }
 
 // Shapes we read from the app's API (subset of BatchView).
+interface PresetView { name: string; pageId?: string; pageName?: string; igUserId?: string; igName?: string; enhancements?: Record<string, string>; multiAdvertiser?: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string }
 interface Check { level: "error" | "warning"; message: string }
 interface AdCopy { primaryTexts: string[]; headlines: string[]; description?: string; linkUrl: string; cta: string; utmTemplate?: string; displayLink?: string; leadFormId?: string }
 interface ViewAd {
@@ -82,7 +83,7 @@ interface View {
     adsetName: string | null;
     copyTemplateId: number | null;
     copy?: AdCopy;
-    preset: { name: string } | null;
+    preset: PresetView | null;
     goLive: string;
     goLiveAt: string | null;
     extraAdsets: { name: string; campaignName: string }[];
@@ -164,18 +165,42 @@ interface LaunchSum {
     goLive: string;
     warnings: string[];
     checks?: { level: string; message: string }[];
+    /** Lines shown even when all is well: ad account health, pixel, daily budget ceiling. */
+    health?: string[];
     spendConfirmation: string | null;
   } | null;
 }
 
-/** The copy line of the summary: the batch's copy (ads with their own copy are in the table). */
+/** The settings preset in one line: every ad-level setting it sends (Page, Instagram, WhatsApp, Threads, branded content…). */
+function presetLine(p: PresetView | null): string {
+  if (!p) return "Settings preset: none.";
+  const on = Object.entries(p.enhancements ?? {}).filter(([, v]) => v === "OPT_IN").map(([k]) => k);
+  const parts = [
+    `Facebook Page ${p.pageName || p.pageId || "not set"}`,
+    `Instagram ${p.igName ? `@${p.igName}` : p.igUserId ? `ID ${p.igUserId}` : "none (the Page is used)"}`,
+    `WhatsApp number ${p.whatsappNumber || "none"}`,
+    `Threads account ${p.threadsUserId || "none"}`,
+    `branded content partner Page ${p.sponsorPageId || "none"}`,
+    `AI enhancements ${on.length ? `${on.join(", ")} on` : "all off"}`,
+    `multi-advertiser ${p.multiAdvertiser ? "on" : "off"}`,
+  ];
+  return `Settings preset: ${p.name} (${parts.join(", ")}).`;
+}
+
+/**
+ * The copy line of the summary: the batch's copy (ads with their own copy are in the table), and how
+ * many ads have a link of their own, so the batch's link is never read as every ad's link.
+ */
 function copyLine(v: View | undefined, l: NonNullable<LaunchSum["launch"]>): string {
   const own = v ? v.ads.filter((a) => a.hasOverride).length : 0;
   const c = v?.settings.copy;
-  const label = own ? `Copy (the batch copy; ${own} ad${own === 1 ? " has its" : "s have their"} own, shown in the table)` : "Copy";
+  const batchLink = c ? c.linkUrl : l.copy.link;
+  const ownLinks = v ? v.ads.filter((a) => a.hasOverride && a.copy.linkUrl !== batchLink).length : 0;
+  const notes = [own ? `${own} ad${own === 1 ? " has its" : "s have their"} own copy, shown in the table` : "", ownLinks ? `${ownLinks} ad${ownLinks === 1 ? " has its" : "s have their"} own link` : ""].filter(Boolean);
+  const label = notes.length ? `Copy (the batch copy; ${notes.join("; ")})` : "Copy";
   if (!c) return `${label}: ${l.copy.primaryTexts} primary text(s), ${l.copy.headlines} headline(s), ${l.copy.cta} → ${l.copy.link || "no link"}${l.copy.utm ? ` · UTM ${l.copy.utm}` : ""}. First text: "${clip(l.copy.firstText, 160)}"`;
   const first = c.primaryTexts[0] ?? "";
-  return `${label}: ${c.primaryTexts.length} primary text(s), ${c.headlines.length} headline(s), ${c.cta} → ${c.linkUrl || "no link"}${c.utmTemplate ? ` · UTM ${c.utmTemplate}` : ""}${c.displayLink ? ` · display link ${c.displayLink}` : ""}${c.leadFormId ? ` · lead form ${c.leadFormId}` : ""}. First text: "${clip(first, 160)}"`;
+  return `${label}: ${c.primaryTexts.length} primary text(s), ${c.headlines.length} headline(s), ${c.cta} → ${c.linkUrl || "no link"}${c.utmTemplate ? ` · UTM ${c.utmTemplate}` : ""} · display link ${c.displayLink || "none"} · description ${c.description ? `"${clip(c.description, 80)}"` : "none"}${c.leadFormId ? ` · lead form ${c.leadFormId}` : ""}. First text: "${clip(first, 160)}"`;
 }
 
 function summaryText(s: LaunchSum, v?: View): string {
@@ -200,6 +225,7 @@ function summaryText(s: LaunchSum, v?: View): string {
   for (const x of l.lifetimeBudgets ?? []) lines.push(`Lifetime budget: ${x}`);
   lines.push(`TOTAL daily budget: ${l.totalDailyLabel}.${l.lifetimeBudgets?.length ? " (Lifetime budgets are counted as what they can spend per day.)" : ""} Ads: ${l.adCount}. ${l.goLive}`);
   lines.push(copyLine(v, l));
+  for (const h of l.health ?? []) lines.push(h);
   for (const w of l.warnings) lines.push(`Budget warning: ${w}`);
   for (const c of l.checks ?? []) lines.push(`${c.level === "error" ? "CHECK FAILED" : "Check"}: ${c.message}`);
   return lines.join("\n");
@@ -214,6 +240,7 @@ function copyCell(a: ViewAd): string {
     a.copy.headlines[0] ? `headline "${clip(a.copy.headlines[0], 40)}"` : "",
     `button ${a.copy.cta}`,
     a.copy.displayLink ? `display link ${a.copy.displayLink}` : "",
+    a.copy.description ? `description "${clip(a.copy.description, 40)}"` : "",
     a.copy.leadFormId ? `lead form ${a.copy.leadFormId}` : "",
     a.override?.format === "carousel" ? "carousel" : "",
   ].filter(Boolean);
@@ -225,7 +252,8 @@ function previewText(v: View, sum?: LaunchSum, sumError?: string): string {
   const lines: string[] = [];
   lines.push(`Batch ${v.key} (${v.source.kind === "drive" ? `Drive folder "${v.source.label}"` : "uploaded files"}): ${v.ads.length} ads, ${liveWords(s.goLive, s.goLiveAt, "upper")}.`);
   lines.push(`Destination: ${s.campaignName ?? "no campaign picked"} → ${s.adsetMode === "new_per_ad" ? `a new ad set per ad, copied from "${s.adsetName ?? "?"}"` : s.adsetMode === "new_shared" ? `one new ad set for all the ads, copied from "${s.adsetName ?? "?"}"` : (s.adsetName ?? "no ad set picked")}${s.extraAdsets?.length ? `; the same ads also go into ${s.extraAdsets.map((x) => `"${x.name}" (${x.campaignName})`).join(", ")}` : ""}`);
-  lines.push(`Settings preset: ${s.preset?.name ?? "none"}. Time estimate: ${estimateWords(v.preview.estimate)}.`);
+  lines.push(presetLine(s.preset));
+  lines.push(`Time estimate: ${estimateWords(v.preview.estimate)}.`);
   lines.push(`Open in the app to check or regroup by dragging: ${v.links.app}`);
   lines.push("");
   for (const c of v.preview.batchChecks) lines.push(`${c.level === "error" ? "ERROR" : "Warning"}: ${c.message}`);
@@ -458,7 +486,7 @@ export function registerTools(server: McpServer, api: LauncherApi) {
     "list_templates",
     {
       title: "List copy, naming and settings presets",
-      description: "List saved copy templates (primary texts, headlines, link, call to action, display link, lead form, UTM tags), naming templates and Meta settings presets (Page, Instagram account, AI enhancements, multi-advertiser, WhatsApp number, Threads account, partner Page).",
+      description: "List saved copy templates (primary texts, headlines, link, call to action, display link, description, lead form, UTM tags), naming templates and Meta settings presets (Page, Instagram account, AI enhancements, multi-advertiser, WhatsApp number, Threads account, partner Page = Ads Manager's \"Branded content\").",
       inputSchema: {},
       annotations: { readOnlyHint: true },
     },
@@ -475,14 +503,14 @@ export function registerTools(server: McpServer, api: LauncherApi) {
           "Copy templates:",
           ...t.copy.map(
             (c) =>
-              `  - "${c.name}" (id ${c.id}): ${c.primaryTexts.length} primary texts, ${c.headlines.length} headlines, ${c.cta} → ${c.linkUrl || "no link"} · display link ${c.displayLink || "none"} · lead form ${c.leadFormId || "none"} · UTM ${c.utmTemplate || "none"}\n    First text: ${c.primaryTexts[0] ?? "(none)"}`,
+              `  - "${c.name}" (id ${c.id}): ${c.primaryTexts.length} primary texts, ${c.headlines.length} headlines, ${c.cta} → ${c.linkUrl || "no link"} · display link ${c.displayLink || "none"} · description ${c.description ? `"${c.description}"` : "none"} · lead form ${c.leadFormId || "none"} · UTM ${c.utmTemplate || "none"}\n    First text: ${c.primaryTexts[0] ?? "(none)"}`,
           ),
           "Naming templates:",
           ...t.naming.map((n) => `  - ${n.kind === "ad" ? "Ad" : n.kind === "adset" ? "Ad set" : "Campaign"} "${n.name}" (id ${n.id}): ${n.pattern}${n.is_default ? " (default)" : ""}`),
           "Settings presets:",
           ...t.presets.map(
             (p) =>
-              `  - "${p.name}" (id ${p.id})${p.isDefault ? " (default)" : ""}: Page ${p.pageName || p.pageId || "not set"}, Instagram ${p.igName ? `@${p.igName}` : "none"}, AI enhancements ${p.enhancementsOn.length ? p.enhancementsOn.join(", ") + " on" : "all off"}, multi-advertiser ${p.multiAdvertiser ? "on" : "off"}, WhatsApp ${p.whatsappNumber || "none"}, Threads account ${p.threadsUserId || "none"}, partner Page ${p.sponsorPageId || "none"}`,
+              `  - "${p.name}" (id ${p.id})${p.isDefault ? " (default)" : ""}: Page ${p.pageName || p.pageId || "not set"}, Instagram ${p.igName ? `@${p.igName}` : "none"}, AI enhancements ${p.enhancementsOn.length ? p.enhancementsOn.join(", ") + " on" : "all off"}, multi-advertiser ${p.multiAdvertiser ? "on" : "off"}, WhatsApp ${p.whatsappNumber || "none"}, Threads account ${p.threadsUserId || "none"}, partner Page (branded content) ${p.sponsorPageId || "none"}`,
           ),
           "Advantage+ creative enhancement keys (for save_settings_preset):",
           ...t.features.map((f) => `  ${f.key} = ${f.label}`),

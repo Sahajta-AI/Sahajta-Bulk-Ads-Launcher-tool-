@@ -123,7 +123,7 @@ describe("B1 destination checks reach the view and the launch", () => {
     const { batchId, key } = await batch();
     const seen = (await runPreview(key)).preview.warnings;
     updateBatch(batchId, { copy: JSON.stringify({ ...LEAD, linkUrl: "https://example.com/dead" }) });
-    await expect(launchBatch(key, { confirm: true, acceptWarnings: seen })).rejects.toThrow(/new warning.*since you checked[\s\S]*answered with error 404/);
+    await expect(launchBatch(key, { confirm: true, acceptWarnings: seen })).rejects.toThrow(/new warning.*since you checked[\s\S]*page not found \(404\)/);
     expect(getBatch(batchId)!.status).toBe("draft");
   }, 60_000);
 
@@ -580,10 +580,10 @@ describe("R7 landing page wording", () => {
     const nx = (async () => {
       throw new TypeError("fetch failed", { cause: Object.assign(new Error("getaddrinfo ENOTFOUND warm.example.org"), { code: "ENOTFOUND" }) });
     }) as unknown as typeof fetch;
-    expect((await checkLinks(["https://warm.example.org/a"], nx)).get("https://warm.example.org/a")).toBe("The address warm.example.org does not exist (no DNS record). People clicking the ad would see an error page.");
+    expect((await checkLinks(["https://warm.example.org/a"], nx)).get("https://warm.example.org/a")).toBe("Landing page https://warm.example.org/a: couldn't open: the site doesn't exist (no web address warm.example.org). People clicking the ad would see an error page.");
     const status = (n: number) => (async () => new Response("x", { status: n })) as unknown as typeof fetch;
     expect((await checkLinks(["https://site.example.org/"], status(403))).get("https://site.example.org/")).toMatch(/refused the launcher's check.*open it in a browser/);
-    expect((await checkLinks(["https://site.example.org/"], status(404))).get("https://site.example.org/")).toMatch(/answered with error 404/);
+    expect((await checkLinks(["https://site.example.org/"], status(404))).get("https://site.example.org/")).toMatch(/page not found \(404\)/);
   });
 
   it("a landing page that doesn't load is a warning after the full check", async () => {

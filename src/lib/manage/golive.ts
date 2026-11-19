@@ -6,10 +6,10 @@ import { adCopy, batchCopy, batchPreset, getAccount, getAds, getBatch, getBatchB
 import { istLabel, timeMs } from "../time";
 import { dailyEquivalent } from "./budget";
 import type { BatchRow, Check } from "../types";
-import { accountHealth, pixelCheck } from "./checks";
+import { accountStatus, pixelReport, type PixelReport } from "./checks";
 import { accountInfo, campaignAdSets, describeAdSet, getAdSet, getCampaign, isCbo, istTime, type AdSetRow } from "./objects";
 import { fromMinor, money } from "./options";
-import { MAX_COPIES, budgetWarnDaily, savePlan, summarise, type Op, type PlanInput, type PlanSummary, type SpendItem } from "./plan";
+import { MAX_COPIES, budgetWarnDaily, ceilingWords, dailyCeiling, savePlan, summarise, type Op, type PlanInput, type PlanSummary, type SpendItem } from "./plan";
 
 // Batches: what happens after the ads are in ("launch now" / "at a time"), and the summary
 // shown before the launch is confirmed.
@@ -415,8 +415,27 @@ export interface LaunchSummary {
   warnings: string[];
   /** Account health, pixel and landing page checks. */
   checks: Check[];
+  /**
+   * Lines shown even when all is well: "Ad account health: active, payment method Visa *1234, no
+   * spending limit", "Pixel: …" (or "no pixel needed"), "Daily budget ceiling: …".
+   */
+  health: string[];
   /** Typed back to confirm a launch that turns ads on (one amount, the total above); null for paused launches. */
   spendConfirmation: string | null;
+}
+
+/** Goals that count results on the website, so they need a pixel. */
+const WEBSITE_CONVERSION_GOALS = new Set(["OFFSITE_CONVERSIONS", "VALUE"]);
+
+/** One pixel in a line: "“Site pixel” (ID px1) · event Lead · last event 1 Nov 2026 · on 2 of 2 landing pages". */
+function pixelLine(r: PixelReport, events: string[], pages: number): string {
+  if (r.name === undefined) return `pixel ${r.pixelId} couldn't be checked (see below)`;
+  const parts = [`"${r.name}" (ID ${r.pixelId})`, events.length ? `event ${events.join(", ")}` : "no event set"];
+  parts.push(r.lastFired ? `last event ${r.lastFired.slice(0, 10)}` : "has NEVER sent an event");
+  if (!pages) parts.push("no landing page to look on");
+  else if (!r.pagesLooked) parts.push("not looked for on the landing pages (they didn't open in time; see below)");
+  else parts.push(`found on ${r.pagesWith} of ${r.pagesLooked} landing page${r.pagesLooked === 1 ? "" : "s"} checked`);
+  return parts.join(" · ");
 }
 
 /** Everything the person should see before saying yes. Reads Meta (each ad set once); writes nothing. */
@@ -470,7 +489,7 @@ export async function launchSummary(b: BatchRow, goLive: { mode: "paused" | "now
       ads: ads.length,
       isNew: b.adset_mode !== "existing",
     });
-    if (each && each > budgetWarnDaily()) warnings.push(`"${a.name}" can spend ${m(each)} a day, above the usual limit of ${m(budgetWarnDaily())}.`);
+    if (each && each > budgetWarnDaily()) warnings.push(`"${a.name}" can spend ${m(each)} a day, above the usual limit of ${m(budgetWarnDaily())}. ${ceilingWords(m)}`);
   }
   for (const c of campaigns.values()) {
     const cbo = isCbo(c);
@@ -480,7 +499,7 @@ export async function launchSummary(b: BatchRow, goLive: { mode: "paused" | "now
     const lifeText = cbo && life ? lifetimeLabel(life, c.stop_time, perDay - (daily ?? 0), m) : "";
     if (lifeText) lifetimeBudgets.push(`Campaign "${c.name}": ${lifeText}`);
     campaignList.push({ id: c.id, name: c.name, status: c.status, budget: cbo ? (daily ? `${m(daily)} a day (campaign budget)` : `${lifeText} (campaign budget)`) : "set on each ad set", cbo });
-    if (cbo && perDay > budgetWarnDaily()) warnings.push(`Campaign "${c.name}" can spend ${m(perDay)} a day, above the usual limit of ${m(budgetWarnDaily())}.`);
+    if (cbo && perDay > budgetWarnDaily()) warnings.push(`Campaign "${c.name}" can spend ${m(perDay)} a day, above the usual limit of ${m(budgetWarnDaily())}. ${ceilingWords(m)}`);
   }
   // The total: the plan engine's own count for the turn-on plan this launch makes, at the same moment,
   // so the total typed here is the plan's total when nothing changed in Meta (also with other ad sets
@@ -506,15 +525,42 @@ export async function launchSummary(b: BatchRow, goLive: { mode: "paused" | "now
   if (b.adset_mode !== "existing" && launchExtras(b).length) warnings.push("New ad sets and several ad sets were both picked: each extra ad set is copied the same way as the first.");
   // The batch copy (ads with their own copy are shown in the preview, ad by ad).
   const copy = batchCopy(b);
-  const checks: Check[] = [...(await accountHealth(client))];
-  const pixelIds = new Set<string>();
+  const health: string[] = [];
+  const acct = await accountStatus(client);
+  const checks: Check[] = [...acct.checks];
+  health.push(`Ad account health: ${acct.line}`);
+  // The pixel: each ad set's pixel and event, whether it fired lately and is on the landing pages.
+  const pixelIds = new Map<string, Set<string>>();
+  const noPixelGoals = new Set<string>();
   for (const a of rows.values()) {
-    const px = a.promoted_object?.pixel_id;
-    if (px) pixelIds.add(String(px));
+    const po = a.promoted_object ?? {};
+    const px = po.pixel_id ? String(po.pixel_id) : "";
+    const event = po.custom_event_type ? String(po.custom_event_type) : po.custom_conversion_id ? `custom conversion ${String(po.custom_conversion_id)}` : "";
+    if (px) {
+      if (!pixelIds.has(px)) pixelIds.set(px, new Set());
+      if (event) pixelIds.get(px)!.add(event);
+    } else {
+      const goal = describeAdSet(a, currency).goal;
+      noPixelGoals.add(goal);
+      if (WEBSITE_CONVERSION_GOALS.has(a.optimization_goal ?? "")) {
+        checks.push({ level: "warning", code: "pixel_none", message: `"${a.name}" optimises for website conversions but has no pixel set, so Meta can't count the results. Pick a pixel and event on the ad set in Ads Manager.` });
+      }
+    }
   }
   const links = [...new Set(ads.map((ad) => adCopy(b, ad).linkUrl).filter(Boolean))];
   // Each pixel check has its own time limit: several pixels are checked together, not one after another.
-  for (const list of await Promise.all([...pixelIds].map((px) => pixelCheck(client, px, links)))) checks.push(...list);
+  const reports = await Promise.all([...pixelIds.keys()].map((px) => pixelReport(client, px, links)));
+  for (const r of reports) {
+    checks.push(...r.checks);
+    health.push(`Pixel: ${pixelLine(r, [...(pixelIds.get(r.pixelId) ?? [])], links.length)}`);
+  }
+  if (!pixelIds.size) health.push(`Pixel: no pixel needed (the ad set${rows.size > 1 ? "s don't" : " doesn't"} use one; goal: ${[...noPixelGoals].join("; ") || "not set"})`);
+  // The daily budget ceiling (Settings → Safety): shown always, so the person and Claude know it.
+  const ceiling = dailyCeiling();
+  if (ceiling && goLive.mode !== "paused" && total > ceiling) {
+    checks.push({ level: "error", code: "budget_ceiling", message: `This launch would let ${m(total)} a day spend${lifetimeBudgets.length ? " (lifetime budgets counted per day)" : ""}, above the daily budget ceiling of ${m(ceiling)} set in Settings → Safety. Lower the budgets or launch paused.` });
+  }
+  health.push(`Daily budget ceiling: ${ceiling ? `${m(ceiling)} a day (Settings → Safety): a launch or plan that would let more spend per day is refused` : "none set, so nothing stops a very large budget. It can be set only in the app, Settings → Safety"}.`);
   const preset = batchPreset(b);
   const goLiveText =
     goLive.mode === "now" ? "Turned ON as soon as every ad is created." : goLive.mode === "at" && goLive.at ? `Created paused, turned ON at ${istTime(goLive.at)}.` : "Created PAUSED. Nothing spends until someone turns it on.";
@@ -535,6 +581,7 @@ export async function launchSummary(b: BatchRow, goLive: { mode: "paused" | "now
     goLive: goLiveText,
     warnings,
     checks,
+    health,
     spendConfirmation: goLive.mode === "paused" ? null : m(total),
   };
 }

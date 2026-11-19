@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import type { LaunchSummary } from "@/lib/manage/golive";
 import type { BatchView, CampaignInfo, ConnectionSummary } from "@/lib/service";
 import { api } from "../../client-api";
@@ -52,6 +52,8 @@ export default function LaunchStep({ view, dest, patch, summary, summaryError, s
   const extraIds = new Set(s.extraAdsets.map((x) => x.id));
   const l = summary?.launch;
   const c = summary?.connection;
+  // Ads with a link of their own: the batch's link above is not theirs.
+  const ownLinks = view.ads.filter((a) => a.hasOverride && a.copy.linkUrl !== s.copy.linkUrl).length;
 
   return (
     <section className="panel">
@@ -138,7 +140,15 @@ export default function LaunchStep({ view, dest, patch, summary, summaryError, s
             <dt>Ads</dt><dd>{view.ads.length * (1 + s.extraAdsets.length)}</dd>
             <dt>Time</dt><dd>{view.preview.estimate.text}</dd>
             <dt>When</dt><dd>{l.goLive}</dd>
-            <dt>Copy</dt><dd>{l.copy.primaryTexts} primary text{l.copy.primaryTexts === 1 ? "" : "s"}, {l.copy.headlines} headline{l.copy.headlines === 1 ? "" : "s"}, {l.copy.cta.replace(/_/g, " ").toLowerCase()} → {l.copy.link ? <a href={l.copy.link} target="_blank" rel="noreferrer">{l.copy.link}</a> : <span style={{ color: "var(--err)" }}>no link</span>}</dd>
+            <dt>Copy</dt><dd>{l.copy.primaryTexts} primary text{l.copy.primaryTexts === 1 ? "" : "s"}, {l.copy.headlines} headline{l.copy.headlines === 1 ? "" : "s"}, {l.copy.cta.replace(/_/g, " ").toLowerCase()} → {l.copy.link ? <a href={l.copy.link} target="_blank" rel="noreferrer">{l.copy.link}</a> : <span style={{ color: "var(--err)" }}>no link</span>}
+              {" "}· display link {s.copy.displayLink || "none"} · description {s.copy.description ? `“${s.copy.description}”` : "none"}
+              {ownLinks > 0 && <div><small>{ownLinks} ad{ownLinks === 1 ? " has its" : "s have their"} own link (shown in the ads table).</small></div>}
+            </dd>
+            <dt>Settings</dt><dd>WhatsApp number {s.preset?.whatsappNumber || "none"} · Threads account {s.preset?.threadsUserId || "none"} · branded content partner Page {s.preset?.sponsorPageId || "none"}</dd>
+            {(l.health ?? []).map((h) => {
+              const at = h.indexOf(": ");
+              return <Fragment key={h}><dt>{at > 0 ? h.slice(0, at) : "Check"}</dt><dd>{at > 0 ? h.slice(at + 2) : h}</dd></Fragment>;
+            })}
             {l.copy.utm && <><dt>Link tags</dt><dd><code style={{ overflowWrap: "anywhere" }}>{l.copy.utm}</code></dd></>}
           </dl>
           <div className="table-wrap">

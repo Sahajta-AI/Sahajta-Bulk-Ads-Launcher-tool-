@@ -212,7 +212,7 @@ describe("Pixel and landing page checks", () => {
     const started = Date.now();
     const res = await checkLinks(["https://warmchain.sahajta.com/apply"], nxdomain);
     expect(Date.now() - started).toBeLessThan(2000);
-    expect(res.get("https://warmchain.sahajta.com/apply")).toMatch(/does not exist|no DNS|not registered|domain/i);
+    expect(res.get("https://warmchain.sahajta.com/apply")).toMatch(/does not exist|doesn't exist|no DNS|not registered|domain/i);
   });
 });
 

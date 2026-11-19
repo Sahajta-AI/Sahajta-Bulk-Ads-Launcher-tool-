@@ -94,6 +94,8 @@ interface PlanView {
   link: string;
   summary: {
     account: { id: string; name: string; currency: string };
+    /** The daily budget ceiling (Settings → Safety) when the plan was checked; 0 = none. */
+    dailyCeiling?: number;
     steps: { n: number; title: string; lines: string[] }[];
     adsets: PlanAdSet[];
     campaignBudgets?: { name: string; dailyBudget: number | null; lifetimeBudget: number | null; status: string }[];
@@ -182,6 +184,13 @@ function draftText(v: PlanView, out: string[], m: Money) {
   out.push(`TOTAL daily budget at the end of this plan (every ad set once, at its final budget, plus campaign budgets): ${m(s.totals.dailyBudget)}${s.totals.lifetimeBudget ? ` (plus ${m(s.totals.lifetimeBudget)} lifetime)` : ""}. ${s.totals.campaigns} campaign(s), ${s.totals.adsets} new ad set(s), ${s.totals.ads} ad(s).`);
   if (s.totals.turnsOn.length) out.push(`TURNS ON: ${s.totals.turnsOn.join("; ")}. Daily budget able to spend afterwards: ${m(s.totals.spendNowDaily)}.`);
   for (const n of s.notes ?? []) out.push(`Money note: ${n}`);
+  if (s.dailyCeiling !== undefined) {
+    out.push(
+      s.dailyCeiling
+        ? `Daily budget ceiling (Settings → Safety): ${m(s.dailyCeiling)} a day. A plan that would let more spend per day can't run.`
+        : "Daily budget ceiling: none set, so nothing stops a very large budget. Only the person can set one, in the app: Settings → Safety (get_safety_settings shows it).",
+    );
+  }
   if (s.canSpend && s.spendConfirmation) {
     const differs = s.spendConfirmation !== m(s.totals.dailyBudget);
     out.push(`To run it, the person types ${s.spendConfirmation}: what can spend in a day once this plan has run${differs ? ". This differs from the TOTAL above: the TOTAL counts every ad set in the plan, on or off; this counts what is on afterwards, including ad sets already on in the campaigns it turns on" : ""}.`);
@@ -193,7 +202,7 @@ function draftText(v: PlanView, out: string[], m: Money) {
   if (s.adsets.length) {
     out.push("", "Every ad set in the plan, as it will be at the end:", "| Steps | Ad set | Campaign | Daily budget | Lifetime | Bid | Schedule | Audience | Placements | On/off |", "|---|---|---|---|---|---|---|---|---|---|");
     for (const a of s.adsets.slice(0, MAX_ROWS)) {
-      out.push(`| ${(a.steps ?? [a.step]).join(", ")} | ${cell(a.name)} | ${cell(a.campaign)} | ${a.dailyBudget === null ? (a.details.budget === "campaign budget" ? "campaign budget" : "") : m(a.dailyBudget)} | ${a.lifetimeBudget === null ? "" : m(a.lifetimeBudget)} | ${cell(a.details.bid ?? "")} | ${cell(a.details.schedule ?? "")} | ${cell(a.details.audience ?? "")} | ${cell(a.details.placements ?? "")} | ${(a.status ?? "").toLowerCase()} |`);
+      out.push(`| ${(a.steps ?? [a.step]).join(", ")} | ${cell(a.name)} | ${cell(a.campaign)} | ${a.dailyBudget === null ? (a.details.budget === "campaign budget" ? "campaign budget" : "") : m(a.dailyBudget)} | ${!a.lifetimeBudget ? "" : m(a.lifetimeBudget)} | ${cell(a.details.bid ?? "")} | ${cell(a.details.schedule ?? "")} | ${cell(a.details.audience ?? "")} | ${cell(a.details.placements ?? "")} | ${(a.status ?? "").toLowerCase()} |`);
     }
     cut = Math.max(0, s.adsets.length - MAX_ROWS);
     if (cut) {
@@ -856,7 +865,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
     {
       title: "Create or edit a settings preset",
       description:
-        "Ad-level Meta settings used for every ad of a batch: Facebook Page, Instagram account, each Advantage+ creative enhancement on or off, multi-advertiser ads, WhatsApp number, Threads account and partner Page. Give preset (id or exact name), or a name that already exists, to edit one; fields left out keep their value and \"\" clears one (WhatsApp, Threads, partner Page). list_templates shows the enhancement keys. Use connection_status / list_instagram_accounts for Page and Instagram IDs. The answer shows everything saved.",
+        "Ad-level Meta settings used for every ad of a batch: Facebook Page, Instagram account, each Advantage+ creative enhancement on or off, multi-advertiser ads, WhatsApp number, Threads account and partner Page. The partner Page is what Ads Manager calls \"Branded content\" (or \"Branding\"): the sponsor's Page of a paid partnership; give it as partner_page_id (branded_content_partner and branding are the same field). Give preset (id or exact name), or a name that already exists, to edit one; fields left out keep their value and \"\" clears one (WhatsApp, Threads, partner Page). list_templates shows the enhancement keys. Use connection_status / list_instagram_accounts for Page and Instagram IDs. The answer shows everything saved.",
       inputSchema: {
         preset: z.string().optional().describe("Id or exact name of the preset to edit"),
         name: z.string().optional(),
@@ -870,7 +879,9 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
         multi_advertiser: z.boolean().optional(),
         whatsapp_number: z.string().optional().describe("For 'Send WhatsApp message' buttons, with country code, e.g. +919812345678 (\"\" = none)"),
         threads_account_id: z.string().optional().describe("Threads account ID shown on Threads placements (\"\" = none)"),
-        partner_page_id: z.string().optional().describe("Partnership ad ('Paid partnership' label): the partner's Facebook Page ID; that Page needs a linked Instagram account (\"\" = none)"),
+        partner_page_id: z.string().optional().describe("Branded content / partnership ad ('Paid partnership' label): the partner's (sponsor's) Facebook Page ID. This is the field Ads Manager calls \"Branded content\" or \"Branding\". That Page needs a linked Instagram account (\"\" = none)"),
+        branded_content_partner: z.string().optional().describe("Same as partner_page_id (Ads Manager's \"Branded content\" partner Page ID)"),
+        branding: z.string().optional().describe("Same as partner_page_id (Ads Manager's \"Branding\" / branded content partner Page ID)"),
         is_default: z.boolean().optional(),
       },
       annotations: { readOnlyHint: false, destructiveHint: false },
@@ -887,6 +898,10 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
           enhancements = Object.fromEntries([...on].map((k) => [k, "OPT_IN" as const]));
         }
         const noIg = a.instagram_id?.trim().toLowerCase() === "none";
+        // Ads Manager's "Branded content" / "Branding" partner is the partner Page: one field, three names.
+        const given = [a.partner_page_id, a.branded_content_partner, a.branding].filter((x): x is string => x !== undefined);
+        if (new Set(given.map((x) => x.trim())).size > 1) throw new Error(`partner_page_id, branded_content_partner and branding are the same field (the branded content partner Page), but different values were given: ${given.map((x) => `"${x}"`).join(", ")}. Give one.`);
+        const partner = given[0];
         const body = {
           kind: "preset",
           id: cur?.id,
@@ -900,7 +915,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
           multiAdvertiser: a.multi_advertiser,
           whatsappNumber: a.whatsapp_number,
           threadsUserId: a.threads_account_id,
-          sponsorPageId: a.partner_page_id,
+          sponsorPageId: partner,
           isDefault: a.is_default,
         };
         const r = await api.call<{ id: number }>("POST", "/api/templates", body);
@@ -912,7 +927,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
           `${cur ? "Updated" : "Created"} preset "${p.name}" (id ${p.id})${p.isDefault ? " (default)" : ""}.`,
           `Facebook Page: ${p.pageName || p.pageId || "not set"}${p.pageId ? ` (ID ${p.pageId})` : ""}. Instagram: ${p.igName ? `@${p.igName}` : p.igUserId ? `ID ${p.igUserId}` : "none (the Facebook Page is used on Instagram)"}${p.igName && p.igUserId ? ` (ID ${p.igUserId})` : ""}.`,
           `Enhancements ON: ${p.enhancementsOn.map((k) => labels.get(k) ?? k).join("; ") || "none (all off)"}. Multi-advertiser ads ${p.multiAdvertiser ? "on" : "off"}.`,
-          `WhatsApp number: ${p.whatsappNumber || "none"}. Threads account: ${p.threadsUserId || "none"}. Partner Page (paid partnership): ${p.sponsorPageId || "none"}.`,
+          `WhatsApp number: ${p.whatsappNumber || "none"}. Threads account: ${p.threadsUserId || "none"}. Partner Page (paid partnership): ${p.sponsorPageId || "none"}. (The partner Page is what Ads Manager calls "Branded content".)`,
         ].join("\n");
       }),
   );

@@ -826,9 +826,9 @@ describe("Row 9 · presets: WhatsApp number, Threads, partner Page, display link
     // A second preset whose name is the start of the first: asking for it by its exact name must pick it.
     await tool("save_settings_preset", { name: "TEST WhatsApp", page_id: "p1", page_name: "Sahajta AI" });
     const pick = await tool("preview_batch", { batch_id: key, settings_preset: "TEST WhatsApp" });
-    expect.soft(pick.text, "preview_batch picks the preset with that exact name").toMatch(/Settings preset: TEST WhatsApp\. /);
+    expect.soft(pick.text, "preview_batch picks the preset with that exact name").toMatch(/Settings preset: TEST WhatsApp \(/);
     const pv = await tool("preview_batch", { batch_id: key, settings_preset: "TEST WhatsApp leads" });
-    expect.soft(pv.text).toMatch(/Settings preset: TEST WhatsApp leads\./);
+    expect.soft(pv.text).toMatch(/Settings preset: TEST WhatsApp leads \(/);
     await tool("set_ad_copy", { batch_id: key, rows: [{ ad: "static-price_1x1.jpg", cta: "WHATSAPP_MESSAGE", display_link: "sahajta.com/wa", primary_texts: ["Chat with us"] }] });
     await tool("launch_batch", { batch_id: key, confirm: true, accept_warnings: true });
     expect(await runBatch(batchId, deps(accountId))).toEqual({ done: 9, failed: 0 });
@@ -856,7 +856,7 @@ describe("Row 10 · pre-launch checks and after launch", () => {
     expect.soft(pv.text).toMatch(/CHECK FAILED: The ad account "Sahajta AI \(mock\)" is unsettled \(an unpaid bill\), so ads won't deliver/);
     expect.soft(pv.text).toMatch(/Pixel "Site pixel" last sent an event on 2026-11-01/);
     // Wording since 19 Nov (R7, in preview.ts): names the page and what people would see.
-    expect.soft(pv.text).toMatch(/The landing page https:\/\/down.example.org\/offer answered with error 404/);
+    expect.soft(pv.text).toMatch(/Landing page https:\/\/down.example.org\/offer: page not found \(404\)/);
     expect.soft(pv.text).toMatch(/Pixel px1 wasn't found on https:\/\/example.com\/visit/);
     const no = await tool("launch_batch", { batch_id: key, confirm: true, accept_warnings: true, spend_confirmation: "₹500" });
     expect.soft(no.text).toMatch(/This launch turns ads on, but:\n- The ad account .* unsettled/);

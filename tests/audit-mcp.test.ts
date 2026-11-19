@@ -300,7 +300,7 @@ describe("settings preset by name", () => {
     expect((await call("save_settings_preset", { name: "Sahajta + IG reels", page_id: "p1", instagram_id: "ig1", switch_on: ["image_touchups"] })).isError).toBe(false);
     expect((await call("save_settings_preset", { name: "Sahajta", page_id: "p1", instagram_id: "none" })).isError).toBe(false);
     const r = await call("preview_batch", { batch_id: key, settings_preset: "Sahajta" });
-    expect(r.text).toMatch(/Settings preset: Sahajta\./);
+    expect(r.text).toMatch(/Settings preset: Sahajta \(/);
     expect(JSON.parse(db().prepare("SELECT preset FROM batches WHERE id = ?").pluck().get(batchId) as string).name).toBe("Sahajta");
   });
 });

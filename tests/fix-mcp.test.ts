@@ -409,7 +409,7 @@ describe("T10 · saving a template or preset shows everything saved", () => {
     expect(e.text).toMatch(/^Updated copy template "Echo"/);
     expect(e.text).toMatch(/Display link: none · Lead form: 4242/);
     const l = await call("list_templates", {});
-    expect(l.text).toMatch(/"Echo" \(id \d+\): .* · display link none · lead form 4242 · UTM utm_source=facebook/);
+    expect(l.text).toMatch(/"Echo" \(id \d+\): .* · display link none · description none · lead form 4242 · UTM utm_source=facebook/);
   });
 
   it("save_settings_preset echoes WhatsApp, Threads and partner Page; \"\" clears one and keeps the others", async () => {
@@ -421,7 +421,7 @@ describe("T10 · saving a template or preset shows everything saved", () => {
     expect(e.text).toMatch(/^Updated preset "WA"/);
     expect(e.text).toMatch(/WhatsApp number: \+919812345678\. Threads account: none\. Partner Page \(paid partnership\): 888\./);
     const l = await call("list_templates", {});
-    expect(l.text).toMatch(/"WA" \(id \d+\): .*WhatsApp \+919812345678, Threads account none, partner Page 888/);
+    expect(l.text).toMatch(/"WA" \(id \d+\): .*WhatsApp \+919812345678, Threads account none, partner Page \(branded content\) 888/);
   });
 });
 
@@ -451,7 +451,7 @@ describe("T12 · preview_batch shows each ad's own copy", () => {
     const n = getAds(batchId).find((a) => a.creative_name.startsWith("static-price"))!.position;
     const row = pv.text.split("\n").find((x) => x.startsWith(`| ${n} |`))!;
     expect(row).toMatch(/OWN COPY: text "Price \/ drop", headline "Only this week", button GET_QUOTE/);
-    expect(pv.text).toMatch(/^Copy \(the batch copy; 1 ad has its own, shown in the table\): 5 primary text\(s\), 5 headline\(s\), LEARN_MORE → https:\/\/example.com\/visit/m);
+    expect(pv.text).toMatch(/^Copy \(the batch copy; 1 ad has its own copy, shown in the table; 1 ad has its own link\): 5 primary text\(s\), 5 headline\(s\), LEARN_MORE → https:\/\/example.com\/visit/m);
   });
 });
 

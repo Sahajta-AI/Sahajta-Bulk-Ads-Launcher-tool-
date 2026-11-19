@@ -93,6 +93,8 @@ export interface SummaryAdSet {
 
 export interface PlanSummary {
   account: { id: string; name: string; currency: string };
+  /** The daily budget ceiling (Settings → Safety) when the plan was checked; 0 = none. */
+  dailyCeiling?: number;
   runAt: string | null;
   steps: { n: number; title: string; lines: string[] }[];
   adsets: SummaryAdSet[];
@@ -900,7 +902,7 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
   }
 
   function budgetCheck(n: number, what: string, daily: number | null | undefined) {
-    if (daily && daily > budgetWarnDaily()) warn(n, `${what} has a daily budget of ${m(daily)}, above the usual limit of ${m(budgetWarnDaily())}. Make sure this is right.`);
+    if (daily && daily > budgetWarnDaily()) warn(n, `${what} has a daily budget of ${m(daily)}, above the usual limit of ${m(budgetWarnDaily())}. Make sure this is right. ${ceilingWords(m)}`);
   }
   function touchAdset(a: WAdSet, n: number) {
     a.touched = true;
@@ -1831,7 +1833,8 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
         name: a.name,
         campaign: c?.name ?? "",
         dailyBudget: cbo ? null : a.daily,
-        lifetimeBudget: cbo ? null : a.lifetime,
+        // A daily-budget ad set has no lifetime budget: null, never ₹0.
+        lifetimeBudget: cbo || !a.lifetime ? null : a.lifetime,
         status: a.status,
         isNew: a.isNew,
         details: { ...d, budget: cbo ? "campaign budget" : a.daily ? `${m(a.daily)} a day` : a.lifetime ? `${m(a.lifetime)} lifetime` : "no budget", status: a.status },
@@ -1862,6 +1865,10 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
   if (ceiling && canSpend && spendNow > ceiling) {
     checks.push({ level: "error", code: "budget_ceiling", message: `This plan would let ${m(spendNow)} a day spend, above the daily budget ceiling of ${m(ceiling)} set in Settings.${spendNotes.length ? ` (${spendNotes.join(" ")})` : ""} Lower the budgets, or raise the ceiling in Settings first.` });
   }
+  if (ceiling && !canSpend) {
+    const over = [...adsets.map((a) => ({ name: a.name, daily: a.dailyBudget ?? 0 })), ...budgetCampaigns.map((c) => ({ name: c.name, daily: c.daily ?? 0 }))].filter((x) => x.daily > ceiling);
+    if (over.length) checks.push({ level: "warning", code: "budget_ceiling", message: `${over.slice(0, 3).map((x) => `"${x.name}" (${m(x.daily)} a day)`).join(", ")}${over.length > 3 ? ` and ${over.length - 3} more` : ""} ${over.length === 1 ? "is" : "are"} above the daily budget ceiling of ${m(ceiling)} set in Settings → Safety. Nothing spends in this plan, but ${over.length === 1 ? "it" : "they"} can't be turned on until the budget is lowered (or the ceiling raised in the app).` });
+  }
   if (canSpend && spendNow === 0 && !input.run_at) checks.push({ level: "warning", code: "nothing_delivers", message: "Something is turned on, but no campaign and ad set are both on afterwards, so nothing will spend yet." });
   const spending = [...world.campaigns.values()].flatMap(onAtEnd);
   if (canSpend && spending.length && spending.every((a) => a.virtual && !a.ads.length)) {
@@ -1875,6 +1882,7 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
 
   return {
     account: { id: client.accountId, name: info.name, currency: cur },
+    dailyCeiling: ceiling,
     runAt: input.run_at ?? null,
     steps,
     adsets,
@@ -1940,6 +1948,17 @@ function adsetRules(n: number, op: AdSetSpec, c: WCampaign, err: (n: number, m: 
   if (op.schedule?.length && op.lifetime_budget === undefined) err(n, "running only at set hours (schedule) needs a lifetime budget (Meta's rule).");
   if (op.frequency_cap && op.goal && !["REACH", "IMPRESSIONS", "POST_ENGAGEMENT"].includes(op.goal)) err(n, "a frequency cap works only with the goal REACH (or impressions / post engagement).");
   if (op.frequency_cap && c.objective && !["OUTCOME_AWARENESS", "OUTCOME_ENGAGEMENT"].includes(c.objective)) err(n, `Meta allows a frequency cap only in Awareness or Engagement campaigns; "${c.name}" is ${c.objective.replace("OUTCOME_", "").toLowerCase()}.`);
+}
+
+/**
+ * The daily budget ceiling in plain words, for a warning about a large budget: its amount, or that
+ * none is set (so nothing stops the budget) and where it is set.
+ */
+export function ceilingWords(m: (x: number) => string): string {
+  const c = dailyCeiling();
+  return c
+    ? `The daily budget ceiling (Settings → Safety) is ${m(c)} a day; a launch or plan that would let more spend per day is refused.`
+    : "No daily budget ceiling is set, so nothing stops this; it can be set only in the app, Settings → Safety.";
 }
 
 /** The hard daily ceiling from Settings (0 = none). */

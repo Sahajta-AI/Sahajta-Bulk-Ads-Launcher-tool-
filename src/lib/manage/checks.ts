@@ -49,14 +49,22 @@ const DISABLE_REASON: Record<number, string> = {
   15: "Meta thinks someone else got into the account (compromised)",
 };
 
+/** The ad account's health in one plain line, and the problems found (errors block a launch that turns ads on). */
+export interface AccountHealth {
+  /** e.g. "active, payment method Visa *1234, no spending limit". */
+  line: string;
+  checks: Check[];
+}
+
 /**
- * Ad account health: status, payment method, account spending limit. A good read is cached
- * 10 minutes; a failed read is not cached, so the next check asks Meta again. Meta limiting calls
- * or a lost login is thrown (the page says so), never turned into a warning.
+ * Ad account health: status, payment method, account spending limit, as one line that is shown even
+ * when all is well, plus a check for each problem. A good read is cached 10 minutes; a failed read is
+ * not cached, so the next check asks Meta again. Meta limiting calls or a lost login is thrown (the
+ * page says so), never turned into a warning.
  */
-export async function accountHealth(client: MetaClient): Promise<Check[]> {
-  const key = `health:${client.accountId}`;
-  const hit = cacheGet<Check[]>(key);
+export async function accountStatus(client: MetaClient): Promise<AccountHealth> {
+  const key = `health2:${client.accountId}`;
+  const hit = cacheGet<AccountHealth>(key);
   if (hit) return hit;
   const out: Check[] = [];
   let a: { name?: string; account_status?: number; disable_reason?: number; spend_cap?: string; amount_spent?: string; currency?: string; funding_source_details?: { display_string?: string } };
@@ -64,23 +72,45 @@ export async function accountHealth(client: MetaClient): Promise<Check[]> {
     a = await client.get(client.accountId, { fields: "name,account_status,disable_reason,spend_cap,amount_spent,currency,funding_source_details" });
   } catch (e) {
     if (mustSurface(e)) throw e;
-    return [{ level: "warning", code: "account_unknown", message: `Couldn't ask Meta about the ad account's status and payment method just now (${why(e)}). Check again in a minute.` }];
+    return {
+      line: "not checked (Meta didn't answer; see the warning)",
+      checks: [{ level: "warning", code: "account_unknown", message: `Couldn't ask Meta about the ad account's status and payment method just now (${why(e)}). Check again in a minute.` }],
+    };
   }
   const cur = a.currency ?? "INR";
-  if (a.account_status !== undefined && a.account_status !== 1) {
-    const why = a.account_status === 2 && a.disable_reason ? ` (Meta's reason: ${DISABLE_REASON[a.disable_reason] ?? `reason code ${a.disable_reason}`})` : "";
-    out.push({ level: a.account_status === 9 ? "warning" : "error", code: "account_status", message: `The ad account "${a.name}" is ${ACCOUNT_STATUS[a.account_status] ?? `in status ${a.account_status}`}${why}, so ads won't deliver. Fix it in Ads Manager → Billing / Account quality.` });
+  const parts: string[] = [];
+  if (a.account_status === undefined) parts.push("status not given by Meta");
+  else if (a.account_status === 1) parts.push("active");
+  else {
+    const reason = a.account_status === 2 && a.disable_reason ? ` (Meta's reason: ${DISABLE_REASON[a.disable_reason] ?? `reason code ${a.disable_reason}`})` : "";
+    const words = ACCOUNT_STATUS[a.account_status] ?? `in status ${a.account_status}`;
+    parts.push(`NOT ACTIVE: ${words}${reason}`);
+    out.push({ level: a.account_status === 9 ? "warning" : "error", code: "account_status", message: `The ad account "${a.name}" is ${words}${reason}, so ads won't deliver. Fix it in Ads Manager → Billing / Account quality.` });
   }
-  if (!a.funding_source_details?.display_string) out.push({ level: "warning", code: "no_payment", message: "Meta shows no payment method on this ad account (or the login can't see it). Ads stop delivering without one." });
+  const card = a.funding_source_details?.display_string;
+  parts.push(card ? `payment method ${card}` : "NO payment method");
+  if (!card) out.push({ level: "warning", code: "no_payment", message: "Meta shows no payment method on this ad account (or the login can't see it). Ads stop delivering without one." });
   const cap = Number(a.spend_cap) || 0;
   if (cap) {
     const left = cap - (Number(a.amount_spent) || 0);
     const leftRs = fromMinor(left, cur) ?? 0;
-    if (left <= 0) out.push({ level: "error", code: "spend_cap", message: `The ad account's spending limit (${money(fromMinor(cap, cur), cur)}) is used up, so nothing will deliver. Raise or reset it in Ads Manager → Billing → Account spending limit.` });
-    else if (left < cap * 0.1) out.push({ level: "warning", code: "spend_cap", message: `Only ${money(leftRs, cur)} is left before the ad account's spending limit; then every ad stops. Raise it in Ads Manager → Billing if needed.` });
-  }
-  cacheSet(key, out, 10 * 60_000);
-  return out;
+    const capText = money(fromMinor(cap, cur), cur);
+    if (left <= 0) {
+      parts.push(`spending limit ${capText} USED UP`);
+      out.push({ level: "error", code: "spend_cap", message: `The ad account's spending limit (${capText}) is used up, so nothing will deliver. Raise or reset it in Ads Manager → Billing → Account spending limit.` });
+    } else {
+      parts.push(`spending limit ${capText} (${money(leftRs, cur)} left)`);
+      if (left < cap * 0.1) out.push({ level: "warning", code: "spend_cap", message: `Only ${money(leftRs, cur)} is left before the ad account's spending limit; then every ad stops. Raise it in Ads Manager → Billing if needed.` });
+    }
+  } else parts.push("no spending limit");
+  const value: AccountHealth = { line: parts.join(", "), checks: out };
+  cacheSet(key, value, 10 * 60_000);
+  return value;
+}
+
+/** The problems of accountStatus only (plans and the launch use these). */
+export async function accountHealth(client: MetaClient): Promise<Check[]> {
+  return (await accountStatus(client)).checks;
 }
 
 /** Landing pages checked for the pixel (more are named in a note), read at most 5 at a time. */
@@ -93,6 +123,8 @@ const PAGES_AT_ONCE = 5;
 export const PAGES_WITHIN_MS = 8_000;
 /** A page the check ran out of time for. */
 const UNCHECKED = Symbol("unchecked");
+/** A page with the pixel on it. */
+const FOUND = Symbol("found");
 
 /** `fn` on every item, at most `n` at a time; results in the items' order. */
 async function eachLimited<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>): Promise<R[]> {
@@ -108,23 +140,42 @@ async function eachLimited<T, R>(items: T[], n: number, fn: (x: T) => Promise<R>
   return out;
 }
 
+/** What the pixel check found, for the one-line summary, and the problems. */
+export interface PixelReport {
+  pixelId: string;
+  /** The pixel's name; undefined when Meta's answer could not be read. */
+  name?: string;
+  /** When it last sent an event (Meta's time), null = never. undefined = not read. */
+  lastFired?: string | null;
+  /** Landing pages the pixel was looked for on (opened in time), and the ones it was found on. */
+  pagesLooked: number;
+  pagesWith: number;
+  checks: Check[];
+}
+
 /**
  * The pixel exists, has fired recently, and (when a landing page is given) is on that page.
  * "Pixel isn't in this ad account" only when Meta says so (code 100). Meta limiting calls or a lost
  * login is thrown; any other failed read is a warning, never a false "missing".
  */
 export async function pixelCheck(client: MetaClient, pixelId: string, landingPages: string[] = [], fetchImpl: typeof fetch = fetch, opts: { pagesWithinMs?: number } = {}): Promise<Check[]> {
+  return (await pixelReport(client, pixelId, landingPages, fetchImpl, opts)).checks;
+}
+
+/** pixelCheck with what was found (name, last event, pages it is on) for the summary line. */
+export async function pixelReport(client: MetaClient, pixelId: string, landingPages: string[] = [], fetchImpl: typeof fetch = fetch, opts: { pagesWithinMs?: number } = {}): Promise<PixelReport> {
   const out: Check[] = [];
+  const report = (checks: Check[]): PixelReport => ({ pixelId, pagesLooked: 0, pagesWith: 0, checks });
   let px: { id: string; name?: string; last_fired_time?: string; is_unavailable?: boolean };
   try {
     px = await client.get(pixelId, { fields: "id,name,last_fired_time,is_unavailable" });
   } catch (e) {
     if (mustSurface(e)) throw e;
-    if (e instanceof MetaError && e.code === 100) return [{ level: "error", code: "pixel_missing", message: `Pixel ${pixelId} isn't in this ad account (or the login can't see it). Pick another pixel.` }];
+    if (e instanceof MetaError && e.code === 100) return report([{ level: "error", code: "pixel_missing", message: `Pixel ${pixelId} isn't in this ad account (or the login can't see it). Pick another pixel.` }]);
     if (e instanceof MetaError && (e.code === 10 || e.code === 200 || (e.code !== undefined && e.code > 200 && e.code < 300))) {
-      return [{ level: "warning", code: "pixel_no_access", message: `The launcher's Meta login has no permission to read pixel ${pixelId}, so it wasn't checked. In Meta Business settings → Data sources → Pixels, share the pixel with this ad account (and the login), then check again.` }];
+      return report([{ level: "warning", code: "pixel_no_access", message: `The launcher's Meta login has no permission to read pixel ${pixelId}, so it wasn't checked. In Meta Business settings → Data sources → Pixels, share the pixel with this ad account (and the login), then check again.` }]);
     }
-    return [{ level: "warning", code: "pixel_unknown", message: `Couldn't check pixel ${pixelId} just now (${why(e)}). Check again in a minute.` }];
+    return report([{ level: "warning", code: "pixel_unknown", message: `Couldn't check pixel ${pixelId} just now (${why(e)}). Check again in a minute.` }]);
   }
   if (px.is_unavailable) out.push({ level: "error", code: "pixel_unavailable", message: `Pixel "${px.name}" is unavailable in Meta.` });
   if (!px.last_fired_time) out.push({ level: "warning", code: "pixel_silent", message: `Pixel "${px.name}" has never sent an event, so Meta has nothing to optimise for yet.` });
@@ -135,13 +186,13 @@ export async function pixelCheck(client: MetaClient, pixelId: string, landingPag
   const stop = new AbortController();
   const timer = setTimeout(() => stop.abort(), opts.pagesWithinMs ?? PAGES_WITHIN_MS);
   const late = new Promise<typeof UNCHECKED>((r) => stop.signal.addEventListener("abort", () => r(UNCHECKED), { once: true }));
-  let found: (Check | null | typeof UNCHECKED)[];
+  let found: (Check | null | typeof UNCHECKED | typeof FOUND)[];
   try {
     found = await eachLimited(pages, PAGES_AT_ONCE, (url) => (stop.signal.aborted ? Promise.resolve(UNCHECKED) : Promise.race([pageHasPixel(url, pixelId, fetchImpl, stop.signal), late])));
   } finally {
     clearTimeout(timer);
   }
-  for (const c of found) if (c && c !== UNCHECKED) out.push(c);
+  for (const c of found) if (c && c !== UNCHECKED && c !== FOUND) out.push(c);
   const unchecked = pages.filter((_, i) => found[i] === UNCHECKED);
   if (unchecked.length === 1) {
     out.push({ level: "warning", code: "pixel_pages_unchecked", message: `${unchecked[0]} took too long to open, so pixel ${pixelId} wasn't looked for on it. Check it with Meta Pixel Helper.` });
@@ -152,14 +203,16 @@ export async function pixelCheck(client: MetaClient, pixelId: string, landingPag
   if (all.length > MAX_PAGES) {
     out.push({ level: "warning", code: "pixel_pages_unchecked", message: `There are ${all.length} different landing pages; pixel ${pixelId} was looked for on the first ${MAX_PAGES} only. Check the other ${all.length - MAX_PAGES} with Meta Pixel Helper.` });
   }
-  return out;
+  // Pages that opened: the pixel was found on them, or a warning says it wasn't (a page that didn't open is neither).
+  const looked = found.filter((c) => c === FOUND || (c && c !== UNCHECKED && c.code !== "pixel_page_unread")).length;
+  return { pixelId, name: px.name, lastFired: px.last_fired_time ?? null, pagesLooked: looked, pagesWith: found.filter((c) => c === FOUND).length, checks: out };
 }
 
 /**
  * One landing page: is the pixel in its HTML? A page the checker can't read says so, never "pixel not
  * found". `stop` ends when the whole check is out of time: the page is then "not checked".
  */
-async function pageHasPixel(url: string, pixelId: string, fetchImpl: typeof fetch, stop: AbortSignal): Promise<Check | null | typeof UNCHECKED> {
+async function pageHasPixel(url: string, pixelId: string, fetchImpl: typeof fetch, stop: AbortSignal): Promise<Check | null | typeof UNCHECKED | typeof FOUND> {
   try {
     const res = await fetchImpl(url, { redirect: "follow", signal: AbortSignal.any([AbortSignal.timeout(10_000), stop]), headers: { "User-Agent": "Mozilla/5.0 (SahajtaAdsLauncher pixel check)" } });
     if (!res.ok) {
@@ -174,7 +227,7 @@ async function pageHasPixel(url: string, pixelId: string, fetchImpl: typeof fetc
       return { level: "warning", code: "pixel_not_on_page", message: `Pixel ${pixelId} wasn't found on ${url}${hasTagManager ? " (the page uses Google Tag Manager, which may load it later; check with Meta Pixel Helper)" : ""}. Without it, conversions from this page aren't counted.` };
     }
     if (!hasPixel && hasMetaTag) return { level: "warning", code: "pixel_other", message: `${url} has a Meta pixel, but not ${pixelId}. Check the page and the ad set use the same pixel.` };
-    return null;
+    return FOUND;
   } catch {
     if (stop.aborted) return UNCHECKED;
     return null; // a page that doesn't open is reported by the landing page check
@@ -203,6 +256,8 @@ export async function creativePreviews(client: MetaClient, creative: Record<stri
       const src = /src="([^"]+)"/.exec(body)?.[1]?.replace(/&amp;/g, "&") ?? null;
       out.push({ label: f.label, url: src });
     } catch (e) {
+      // Meta limiting calls (or a lost login) is said once, with when to try again: never six "not available".
+      if (mustSurface(e)) throw e;
       out.push({ label: f.label, url: null, problem: e instanceof Error ? e.message.slice(0, 160) : String(e) });
     }
   }

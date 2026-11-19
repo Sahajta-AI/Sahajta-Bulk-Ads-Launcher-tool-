@@ -401,32 +401,59 @@ export function linkProblemText(url: string, failure: number | unknown): string 
   }
   if (typeof failure === "number") {
     if (failure === 403 || failure === 429 || failure === 503) return `The site ${host} refused the launcher's check of ${url} (HTTP ${failure}); open it in a browser to confirm it works.`;
-    return `The landing page ${url} answered with error ${failure}. People clicking the ad would see an error page.`;
+    if (failure === 404 || failure === 410) return `Landing page ${url}: page not found (${failure}). People clicking the ad would see an error page.`;
+    return `Landing page ${url}: the site answered with an error (${failure}). People clicking the ad would see an error page.`;
   }
   const e = failure as { name?: string; code?: string; message?: string; cause?: { code?: string; message?: string } };
   const code = e?.cause?.code ?? e?.code ?? "";
   if (code === "ENOTFOUND" || code === "EAI_AGAIN" || /ENOTFOUND|EAI_AGAIN/.test(`${e?.message ?? ""} ${e?.cause?.message ?? ""}`)) {
-    return `The address ${host} does not exist (no DNS record). People clicking the ad would see an error page.`;
+    return `Landing page ${url}: couldn't open: the site doesn't exist (no web address ${host}). People clicking the ad would see an error page.`;
   }
-  if (e?.name === "TimeoutError" || e?.name === "AbortError") return `The landing page ${url} did not respond in 10 seconds.`;
-  return `The landing page ${url} could not be reached${code ? ` (${code})` : ""}. Open it in a browser to check it works.`;
+  if (e?.name === "TimeoutError" || e?.name === "AbortError") return `Landing page ${url}: couldn't open: it did not answer within 10 seconds.`;
+  return `Landing page ${url}: couldn't open${code ? ` (${code})` : ""}. Open it in a browser to check it works.`;
 }
 
-/** Fetch each distinct landing page once. The value is the problem in plain words (null = loads fine).
- *  Not loading is a warning, not an error. */
-export async function checkLinks(urls: string[], fetchImpl: typeof fetch = fetch): Promise<Map<string, string | null>> {
+/** Landing pages opened at the same time, and the time all of them must be checked within. */
+const LINKS_AT_ONCE = 5;
+export const LINKS_WITHIN_MS = 15_000;
+
+/**
+ * Open each distinct landing page once, a few at a time, all within one time limit. The value is the
+ * problem in plain words (null = opens fine). A page the check ran out of time for says so. Not
+ * opening is a warning, not an error.
+ */
+export async function checkLinks(urls: string[], fetchImpl: typeof fetch = fetch, opts: { withinMs?: number } = {}): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>();
-  await Promise.all(
-    [...new Set(urls)].filter((u) => /^https?:\/\//i.test(u)).map(async (url) => {
-      try {
-        const res = await fetchImpl(url, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "Mozilla/5.0 (SahajtaAdsLauncher link check)" } });
-        out.set(url, res.ok ? null : linkProblemText(url, res.status));
-        await res.body?.cancel();
-      } catch (e) {
-        out.set(url, linkProblemText(url, e));
-      }
-    }),
-  );
+  const list = [...new Set(urls)].filter((u) => /^https?:\/\//i.test(u));
+  const stop = new AbortController();
+  const timer = setTimeout(() => stop.abort(), opts.withinMs ?? LINKS_WITHIN_MS);
+  const outOfTime = (url: string) => `Landing page ${url} wasn't checked: the check ran out of time. Open it in a browser to check it works.`;
+  /** Set once the answer is given: a page that answers later changes nothing. */
+  let answered = false;
+  const put = (url: string, v: string | null) => !answered && out.set(url, v);
+  const one = async (url: string) => {
+    if (stop.signal.aborted) return put(url, outOfTime(url));
+    try {
+      const res = await fetchImpl(url, { method: "GET", redirect: "follow", signal: AbortSignal.any([AbortSignal.timeout(10_000), stop.signal]), headers: { "User-Agent": "Mozilla/5.0 (SahajtaAdsLauncher link check)" } });
+      put(url, res.ok ? null : linkProblemText(url, res.status));
+      await res.body?.cancel().catch(() => undefined);
+    } catch (e) {
+      put(url, stop.signal.aborted ? outOfTime(url) : linkProblemText(url, e));
+    }
+  };
+  let next = 0;
+  const worker = async () => {
+    while (next < list.length) await one(list[next++]);
+  };
+  // A fetch that ignores the abort can't hold the answer past the time limit.
+  const late = new Promise<void>((r) => stop.signal.addEventListener("abort", () => r(), { once: true }));
+  try {
+    await Promise.race([Promise.all(Array.from({ length: Math.min(LINKS_AT_ONCE, list.length) }, worker)), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+  for (const u of list) if (!out.has(u)) out.set(u, outOfTime(u));
+  answered = true;
   return out;
 }
 
