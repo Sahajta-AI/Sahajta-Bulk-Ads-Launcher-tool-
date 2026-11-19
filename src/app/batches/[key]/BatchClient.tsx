@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { BatchView, CampaignInfo } from "@/lib/service";
 import type { Check } from "@/lib/types";
-import { api, lastUsed } from "../../client-api";
+import { api, lastUsed, type Templates } from "../../client-api";
+import { msgClass } from "../../msg";
+import { checkSections, copyStale as isCopyStale, lastUploadDone, launchAndReread, launchBody, needsDestReload, pickLastUsed, presetStale as isPresetStale, pollDelay, reloadAfterPatch, reloadWithDest, summaryKey, warningsAccepted } from "./batch-logic";
 import Groups from "./Groups";
 import LaunchStep, { useSummary } from "./LaunchStep";
 import CopySheet from "./CopySheet";
@@ -11,13 +13,7 @@ import PreviewTable from "./PreviewTable";
 import Progress from "./Progress";
 import Uploader from "./Uploader";
 
-export interface Templates {
-  copy: { id: number; name: string; primaryTexts: string[]; headlines: string[]; description: string; cta: string; linkUrl: string; utmTemplate: string }[];
-  naming: { id: number; name: string; kind: "ad" | "adset" | "campaign"; pattern: string; is_default: number }[];
-  presets: { id: number; name: string; pageName: string; pageId: string; igName: string; igUserId: string; enhancementsOn: string[]; multiAdvertiser: boolean; isDefault: boolean }[];
-  tokens: { token: string; meaning: string }[];
-  ctaTypes: string[];
-}
+export type { Templates };
 
 function Checks({ list }: { list: Check[] }) {
   if (!list.length) return null;
@@ -35,32 +31,57 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
   const [tpl, setTpl] = useState<Templates | null>(null);
   const [dest, setDest] = useState<CampaignInfo[] | null>(null);
   const [destError, setDestError] = useState("");
+  // error: what an action answered (a refused launch, a refused change). loadError: the last
+  // reload failed. Kept apart so a reload never wipes the reason a launch was refused.
   const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [loadTick, setLoadTick] = useState(0);
   const [busy, setBusy] = useState("");
-  const [accept, setAccept] = useState(false);
+  // How many warnings the page showed when "I read the warnings" was ticked (null: not ticked).
+  // The launch sends this number; a launch that finds more is refused and the box must be ticked again.
+  const [acceptedAt, setAcceptedAt] = useState<number | null>(null);
+  // After such a refusal: the box stays off until the page shows the new warnings.
+  const [rereading, setRereading] = useState(false);
   const [uploading, setUploading] = useState(0);
   const [spendTyped, setSpendTyped] = useState("");
-  const st = view?.settings;
-  const sumDeps = [batchKey, st?.adsetId, st?.adsetMode, st?.goLive, st?.goLiveAt, st?.presetId, JSON.stringify(st?.extraAdsets ?? []), JSON.stringify(st?.preset ?? null), view?.ads.length, st?.copyTemplateId];
-  const { summary, error: summaryError, loading: summaryLoading } = useSummary(batchKey, sumDeps);
+  // The summary reads Meta: asked for only for a draft, and again only when the ad set, copy,
+  // preset or go-live choice changed (not per upload, not per poll; with a new ad set per ad, also
+  // when the number of ads changed, since the total is per ad).
+  const { summary, error: summaryError, loading: summaryLoading, retry: retrySummary } = useSummary(batchKey, summaryKey(view));
   const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const uploadingRef = useRef(0);
 
-  const load = useCallback(async (withDest = false) => {
+  /** Reload the batch. withDest adds the destination checks (they may read Meta). */
+  const load = useCallback(async (withDest = false): Promise<BatchView | null> => {
     try {
-      setView(await api<BatchView>(`/api/batches/${batchKey}${withDest ? "?dest=1" : ""}`));
+      const v = await api<BatchView>(`/api/batches/${batchKey}${withDest ? "?dest=1" : ""}`);
+      setView(v);
+      setLoadError("");
+      return v;
     } catch (e) {
-      setError((e as Error).message);
+      setLoadError((e as Error).message);
+      return null;
+    } finally {
+      setLoadTick((n) => n + 1);
     }
   }, [batchKey]);
 
-  // Uploads finish one by one: reload at most every 1.5 s.
+  // Uploads finish one by one: reload at most every 1.5 s. While files are still uploading the
+  // reload skips the destination checks; once every upload is done, one reload with them.
   const reloadSoon = useCallback(() => {
     if (reloadTimer.current) return;
     reloadTimer.current = setTimeout(() => {
       reloadTimer.current = null;
-      void load(true);
+      void load(reloadWithDest(uploadingRef.current));
     }, 1500);
   }, [load]);
+
+  const onUploading = useCallback((n: number) => {
+    const was = uploadingRef.current;
+    uploadingRef.current = n;
+    setUploading(n);
+    if (lastUploadDone(was, n)) reloadSoon();
+  }, [reloadSoon]);
 
   const loadDest = useCallback(async (refresh = false) => {
     try {
@@ -78,30 +99,42 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
     void loadDest();
   }, [load, loadDest]);
 
-  // Live progress while launching; slower checks for Meta's review afterwards.
+  // Live progress while launching; slower checks for Meta's review afterwards. These reloads
+  // never read Meta. After a failed reload the next one is still scheduled (loadTick changes).
   useEffect(() => {
-    if (!view) return;
-    const running = view.status === "queued" || view.status === "running";
-    const inReview = view.ads.some((a) => a.effectiveStatus === "PENDING_REVIEW" || a.effectiveStatus === "IN_PROCESS" || (a.metaAdId && !a.effectiveStatus));
-    if (!running && !inReview) return;
-    const t = setTimeout(() => void load(), running ? 3000 : 60000);
+    const ms = pollDelay(view, !!loadError);
+    if (ms === null) return;
+    const t = setTimeout(() => void load(), ms);
     return () => clearTimeout(t);
-  }, [view, load]);
+  }, [view, loadError, loadTick, load]);
 
   const warningsSeen = useRef(0);
   useEffect(() => {
     if (view && view.status === "draft" && view.preview.warnings !== warningsSeen.current) {
       warningsSeen.current = view.preview.warnings;
-      setAccept(false); // new or different warnings must be read again
+      setAcceptedAt(null); // new or different warnings must be read again
     }
   }, [view]);
 
+  /**
+   * Show a batch an action answered. A draft answer without the destination checks (they are kept
+   * 2 minutes) is loaded again with them, so an ad set or Instagram error never just disappears.
+   */
+  const show = useCallback((v: BatchView) => {
+    setView(v);
+    if (needsDestReload(v)) void load(true);
+  }, [load]);
+
   async function patch(body: Record<string, unknown>) {
     setError("");
+    const before = view?.preview ?? null;
     try {
-      setView(await api<BatchView>(`/api/batches/${batchKey}`, { method: "PATCH", body }));
-      lastUsed.set(body as never);
-      void load(true);
+      const v = await api<BatchView & { destChecked?: boolean }>(`/api/batches/${batchKey}`, { method: "PATCH", body });
+      setView(v);
+      // Only the ad set, copy template, preset and angle are remembered for the next batch (never the go-live).
+      lastUsed.set(pickLastUsed(body));
+      // The answer already is the batch; reload with destination checks only when they may have changed or are missing.
+      if (reloadAfterPatch(body, before, v) || needsDestReload(v)) void load(true);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -112,20 +145,38 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
     setError("");
     try {
       const v = await fn();
-      if (v) setView(v);
-      else await load();
+      if (v) show(v);
+      else await load(true);
     } catch (e) {
       setError((e as Error).message);
       // A refused launch may have found new warnings (e.g. a landing page that stopped loading).
+      // A failed reload goes to loadError, so the reason above stays on screen.
       void load(true);
     } finally {
       setBusy("");
     }
   }
 
-  if (!view) return error ? <div className="msg error">{error}</div> : <p className="muted">Loading…</p>;
+  /** Launch. A refusal over warnings the page didn't show unticks the box and shows them first. */
+  async function launch(body: ReturnType<typeof launchBody>) {
+    setBusy("launch");
+    setError("");
+    await launchAndReread(() => api<BatchView>(`/api/batches/${batchKey}/launch`, { method: "POST", body }), {
+      shown: (v) => { setView(v); setBusy(""); },
+      failed: (msg) => { setError(msg); setBusy(""); },
+      untick: () => setAcceptedAt(null),
+      rereading: setRereading,
+      reload: () => load(true),
+    });
+  }
+
+  if (!view) {
+    const why = loadError || error;
+    if (!why) return <p className="muted">Loading…</p>;
+    return <div className={msgClass(why)}>{why} <button className="link" onClick={() => void load(true)}>Try again</button></div>;
+  }
   if (view.status !== "draft") {
-    return <Progress view={view} busy={busy} error={error} act={act} batchKey={batchKey} />;
+    return <Progress view={view} tpl={tpl} busy={busy} error={error} loadError={loadError} act={act} reload={load} batchKey={batchKey} />;
   }
 
   const s = view.settings;
@@ -136,20 +187,23 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
   // were edited in Settings since, offer to take the latest version.
   const presetTpl = tpl?.presets.find((p) => p.id === s.presetId);
   const preset = s.preset ? { ...s.preset, enhancementsOn: Object.keys(s.preset.enhancements ?? {}) } : null;
-  const presetStale = !!(presetTpl && preset && (presetTpl.pageId !== preset.pageId || presetTpl.igUserId !== preset.igUserId || presetTpl.multiAdvertiser !== preset.multiAdvertiser || [...presetTpl.enhancementsOn].sort().join() !== [...preset.enhancementsOn].sort().join()));
+  const presetStale = isPresetStale(presetTpl, s.preset);
   const copyTpl = tpl?.copy.find((c) => c.id === s.copyTemplateId);
-  const copyStale = !!(copyTpl && JSON.stringify([copyTpl.primaryTexts, copyTpl.headlines, copyTpl.description, copyTpl.cta, copyTpl.linkUrl, copyTpl.utmTemplate]) !== JSON.stringify([s.copy.primaryTexts, s.copy.headlines, s.copy.description, s.copy.cta, s.copy.linkUrl, s.copy.utmTemplate]));
+  const copyStale = isCopyStale(copyTpl, s.copy);
   const p = view.preview;
-  const destChecks = p.batchChecks.filter((c) => ["no_campaign", "no_adset", "adset_missing", "dynamic_creative"].includes(c.code));
-  const otherChecks = p.batchChecks.filter((c) => !destChecks.includes(c));
+  const sections = checkSections(p.batchChecks);
   const blocked = p.errors > 0;
-  const needsAccept = p.warnings > 0 && !accept;
+  const accepted = warningsAccepted(acceptedAt, p.warnings);
+  const needsAccept = !accepted;
 
   const todo = [...p.batchChecks, ...p.ads.flatMap((a) => a.checks)].filter((c) => c.level === "error").map((c) => c.message);
   const todoAll = [...new Set(todo)];
   const todoShort = todoAll.slice(0, 3);
   const needsSpend = s.goLive !== "paused";
   const spendLabel = summary?.launch?.spendConfirmation ?? "";
+  // Meta refuses to turn ads on while an account check (payment, health, pixel) is an error.
+  const accountBlocks = needsSpend ? (summary?.launch?.checks ?? []).filter((c) => c.level === "error") : [];
+  const newAdset = s.adsetMode === "new_per_ad" || s.adsetMode === "new_shared";
 
   return (
     <>
@@ -169,9 +223,9 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
           onRemove={(assetId) => act("move", () => api<BatchView>(`/api/batches/${batchKey}/move`, { method: "POST", body: { assetId, remove: true } }))}
         />
         <div style={{ marginTop: view.ads.length ? 16 : 0 }}>
-          <Uploader batchKey={batchKey} onUploaded={reloadSoon} onBusy={setUploading} />
+          <Uploader batchKey={batchKey} onUploaded={reloadSoon} onBusy={onUploading} />
         </div>
-        <Checks list={otherChecks.filter((c) => c.code === "skipped_files")} />
+        <Checks list={sections.creatives} />
       </section>
 
       <section className="panel">
@@ -179,7 +233,7 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
           <span className={`step ${s.adsetId ? "done" : ""}`}>2</span><h2>Where they go</h2>
           <button className="link" style={{ marginLeft: "auto", fontSize: 13.5 }} onClick={() => loadDest(true)}>Refresh from Meta</button>
         </header>
-        {destError && <div className="msg error">{destError}</div>}
+        {destError && <div className={msgClass(destError)}>{destError}</div>}
         <div className="row">
           <label>
             <span>Campaign</span>
@@ -191,7 +245,7 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             </select>
           </label>
           <label>
-            <span>{s.adsetMode === "new_per_ad" ? "Ad set to copy for each ad" : "Ad set"}</span>
+            <span>{s.adsetMode === "new_per_ad" ? "Ad set to copy for each ad" : s.adsetMode === "new_shared" ? "Ad set to copy" : "Ad set"}</span>
             <select value={s.adsetId ?? ""} onChange={(e) => patch({ adsetId: e.target.value })} disabled={!campaign}>
               <option value="" disabled>{campaign ? "Choose an ad set" : "Choose a campaign first"}</option>
               {campaign?.adsets.map((a) => (
@@ -200,11 +254,21 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             </select>
           </label>
         </div>
-        <label className="check" style={{ marginTop: 14 }}>
-          <input type="checkbox" checked={s.adsetMode === "new_per_ad"} onChange={(e) => patch({ adsetMode: e.target.checked ? "new_per_ad" : "existing" })} />
-          <span>Put each ad in its own new ad set <small>(a paused copy of the ad set above: same budget, audience and placements)</small></span>
-        </label>
-        <Checks list={destChecks.filter((c) => c.code !== "no_campaign" && c.code !== "no_adset")} />
+        <div className="golive" role="radiogroup" aria-label="Which ad set the ads go into" style={{ marginTop: 14 }}>
+          {([
+            ["existing", "Into this ad set", "Every ad goes into the ad set above."],
+            ["new_per_ad", "A new ad set for each ad", "Each ad gets its own paused copy of the ad set above."],
+            ["new_shared", "One new ad set for all the ads", "One paused copy of the ad set above holds all the ads (up to 50)."],
+          ] as const).map(([v, title, sub]) => (
+            <label key={v} className={s.adsetMode === v ? "on" : ""}>
+              <input type="radio" name="adsetmode" checked={s.adsetMode === v} onChange={() => patch({ adsetMode: v })} />
+              <strong>{title}</strong>
+              <small>{sub}</small>
+            </label>
+          ))}
+        </div>
+        {newAdset && <p className="hint">A copy keeps the same budget, audience and placements, and is created paused.</p>}
+        <Checks list={sections.destination} />
       </section>
 
       <section className="panel">
@@ -237,7 +301,7 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             </div>
           </div>
         ) : null}
-        {view.ads.length > 0 && <CopySheet batchKey={batchKey} onSaved={(v) => setView(v)} />}
+        {view.ads.length > 0 && <CopySheet batchKey={batchKey} features={tpl?.features ?? []} onSaved={show} />}
       </section>
 
       <section className="panel">
@@ -263,7 +327,7 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
           <div style={{ marginTop: 14 }}>
             <small>First ad will be named</small>
             <div className="preview-name">{view.ads[0].metaName}</div>
-            {s.adsetMode === "new_per_ad" && <><small style={{ display: "block", marginTop: 8 }}>in a new ad set named</small><div className="preview-name">{view.ads[0].adsetName}</div></>}
+            {newAdset && <><small style={{ display: "block", marginTop: 8 }}>in a new ad set named</small><div className="preview-name">{view.ads[0].adsetName}</div></>}
           </div>
         )}
         <details>
@@ -274,7 +338,7 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
               <input defaultValue={s.adNameTemplate} key={s.adNameTemplate} onBlur={(e) => e.target.value !== s.adNameTemplate && patch({ adNameTemplate: e.target.value })} />
             </label>
           </div>
-          {s.adsetMode === "new_per_ad" && (
+          {newAdset && (
             <div className="row" style={{ marginTop: 12 }}>
               <label>
                 <span>New ad set name</span>
@@ -315,7 +379,7 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             <dt>Multi-advertiser ads</dt><dd>{preset.multiAdvertiser ? "On" : "Off"}</dd>
           </dl>
         )}
-        <Checks list={otherChecks.filter((c) => c.code === "no_page" || c.code === "no_instagram")} />
+        <Checks list={sections.settings} />
       </section>
 
       <section className="panel">
@@ -325,30 +389,34 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             {busy === "check" ? "Checking…" : "Check landing pages"}
           </button>
         </header>
-        <Checks list={otherChecks.filter((c) => !["skipped_files", "no_page", "no_instagram", "no_ads"].includes(c.code))} />
-        {view.ads.length ? <div className="table-wrap"><PreviewTable view={view} tpl={tpl} batchKey={batchKey} onChange={(v) => setView(v)} /></div> : <p className="muted">Add images or videos in step 1 to see the ads here.</p>}
+        <Checks list={sections.preview} />
+        {view.ads.length ? <div className="table-wrap"><PreviewTable view={view} tpl={tpl} batchKey={batchKey} onChange={show} /></div> : <p className="muted">Add images or videos in step 1 to see the ads here.</p>}
       </section>
 
-      <LaunchStep view={view} dest={dest} patch={(b) => void patch(b)} summary={summary} summaryError={summaryError} summaryLoading={summaryLoading} />
+      <LaunchStep view={view} dest={dest} patch={(b) => void patch(b)} summary={summary} summaryError={summaryError} summaryLoading={summaryLoading} retrySummary={retrySummary} />
 
-      {error && <div className="msg error" style={{ whiteSpace: "pre-line" }}>{error}</div>}
+      {loadError && <div className="msg warning">Could not refresh the batch: {loadError}</div>}
+      {error && <div className={msgClass(error)} style={{ whiteSpace: "pre-line" }}>{error}</div>}
 
       <div className="launchbar">
         <div className="grow">
           <div className="estimate">
-            <strong>{view.ads.length * (1 + s.extraAdsets.length)} ad{view.ads.length * (1 + s.extraAdsets.length) === 1 ? "" : "s"}</strong>, {s.goLive === "paused" ? "created paused" : s.goLive === "now" ? "turned on when all are in" : "turned on at the set time"} · {p.estimate.label}
+            <strong>{view.ads.length * (1 + s.extraAdsets.length)} ad{view.ads.length * (1 + s.extraAdsets.length) === 1 ? "" : "s"}</strong>, {s.goLive === "paused" ? "created paused" : s.goLive === "now" ? "turned on when all are in" : "turned on at the set time"} · {p.estimate.label}{s.extraAdsets.length ? " for all the ad sets" : ""}
           </div>
           {uploading > 0 ? (
             <small>Wait for the uploads to finish: {uploading} file{uploading === 1 ? "" : "s"} still uploading.</small>
           ) : blocked ? (
             <small>Before launch: {todoShort.join(" · ").replace(/\.(?= ·|$)/g, "")}{todoAll.length > 3 ? ` · and ${todoAll.length - 3} more` : ""}</small>
+          ) : accountBlocks.length ? (
+            <small>Ads can&apos;t be turned on yet: {accountBlocks[0].message}{accountBlocks.length > 1 ? ` · and ${accountBlocks.length - 1} more in the summary.` : ""} You can still launch them paused.</small>
           ) : (
-            <small>{p.warnings ? `${p.warnings} warning${p.warnings === 1 ? "" : "s"} in the preview` : "Ready to launch"}{p.estimate.rateLimited ? " · Meta's speed limit for new apps sets the pace" : ""}</small>
+            <small>{p.warnings ? `${p.warnings} warning${p.warnings === 1 ? "" : "s"} in the preview` : "Ready to launch"}{p.estimate.rateLimited ? ` · Meta's limit on this ad account sets the pace: ${p.estimate.pace}` : ""}</small>
           )}
         </div>
         {p.warnings > 0 && !blocked && (
           <label className="check">
-            <input type="checkbox" checked={accept} onChange={(e) => setAccept(e.target.checked)} /> I read the warnings
+            <input type="checkbox" checked={accepted} disabled={rereading} onChange={(e) => setAcceptedAt(e.target.checked ? p.warnings : null)} />
+            {rereading ? "Loading the new warnings…" : `I read the ${p.warnings === 1 ? "warning" : `${p.warnings} warnings`}`}
           </label>
         )}
         {needsSpend && !blocked && (
@@ -357,8 +425,8 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             <input value={spendTyped} onChange={(e) => setSpendTyped(e.target.value)} placeholder={spendLabel || "₹0"} aria-label="Total daily budget" />
           </label>
         )}
-        <button className="primary big" disabled={blocked || needsAccept || !!busy || uploading > 0 || (needsSpend && !spendTyped.trim()) || (needsSpend && !summary?.launch)}
-          onClick={() => act("launch", () => api<BatchView>(`/api/batches/${batchKey}/launch`, { method: "POST", body: { confirm: true, acceptWarnings: accept, spendConfirmation: needsSpend ? spendTyped : undefined } }))}>
+        <button className="primary big" disabled={blocked || needsAccept || rereading || !!busy || uploading > 0 || accountBlocks.length > 0 || (needsSpend && !spendTyped.trim()) || (needsSpend && !summary?.launch)}
+          onClick={() => void launch(launchBody({ warnings: p.warnings, acceptedAt, goLive: s.goLive, spendTyped }))}>
           {busy === "launch" ? "Starting…" : s.goLive === "paused" ? "Launch (paused)" : s.goLive === "now" ? "Launch and turn on" : "Launch and schedule"}
         </button>
       </div>

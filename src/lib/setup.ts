@@ -87,6 +87,9 @@ export function presetFromRow(r: PresetRow): Preset {
     igName: r.ig_name,
     enhancements: JSON.parse(r.enhancements) as Preset["enhancements"],
     multiAdvertiser: !!r.multi_advertiser,
+    whatsappNumber: (r as PresetRow & { whatsapp_number?: string }).whatsapp_number || undefined,
+    threadsUserId: (r as PresetRow & { threads_user_id?: string }).threads_user_id || undefined,
+    sponsorPageId: (r as PresetRow & { sponsor_page_id?: string }).sponsor_page_id || undefined,
   };
 }
 

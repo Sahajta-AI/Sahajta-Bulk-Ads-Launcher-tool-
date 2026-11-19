@@ -15,6 +15,18 @@ export interface ResultData {
   columns: { key: string; label: string; format: Format }[];
   rows: ResultRow[];
   totals: Record<string, number | null>;
+  /** Meta had more rows than the launcher reads: the first rows only, totals of those rows. */
+  truncated?: boolean;
+  /** Plain notes: columns left out, rows cut. */
+  notes?: string[];
+  /** The ad account's time zone (Meta's days follow it). */
+  timezone?: string | null;
+}
+
+/** "Dates follow the ad account's time zone…" when it isn't India time, else null. */
+export function zoneNote(timezone: string | null | undefined): string | null {
+  if (!timezone || timezone === "Asia/Kolkata" || timezone === "Asia/Calcutta") return null;
+  return `Dates and days follow the ad account's time zone (${timezone.replace(/_/g, " ")}), not India time.`;
 }
 
 export const LEVELS = [
@@ -51,6 +63,11 @@ export const BREAKDOWNS = [
 ] as const;
 
 export const breakdownLabel = (k: string) => BREAKDOWNS.find(([b]) => b === k)?.[1] ?? k;
+
+/** Meta shows placement only together with platform: picking Placement alone adds Platform. */
+export function withPlatform(list: string[]): string[] {
+  return list.includes("platform_position") && !list.includes("publisher_platform") ? [...list, "publisher_platform"] : list;
+}
 
 /** "facebook" → "Facebook", "instagram_stories" → "Instagram stories", dates → "17 Nov 2026". */
 export function breakdownValue(key: string, v: string | undefined): string {

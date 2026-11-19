@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { pickLastUsed } from "./batches/[key]/batch-logic";
 import { api, lastUsed } from "./client-api";
 
 export default function NewBatch() {
@@ -12,7 +13,9 @@ export default function NewBatch() {
     setBusy(kind);
     setError("");
     try {
-      const body = { ...lastUsed.get(), ...(kind === "drive" ? { driveFolder: link } : {}) };
+      // Only the remembered ad set, copy template, preset and angle: a new batch always starts paused,
+      // in one ad set (older browsers may still hold a go-live choice: it is left out).
+      const body = { ...pickLastUsed(lastUsed.get() as Record<string, unknown>), ...(kind === "drive" ? { driveFolder: link } : {}) };
       const view = await api<{ key: string }>("/api/batches", { method: "POST", body }).catch(async (e: Error) => {
         // A remembered ad set may be gone: try again without remembered settings.
         if (/Couldn't find/.test(e.message)) return api<{ key: string }>("/api/batches", { method: "POST", body: kind === "drive" ? { driveFolder: link } : {} });

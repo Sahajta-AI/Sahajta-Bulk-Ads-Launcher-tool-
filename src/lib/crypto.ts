@@ -19,12 +19,20 @@ export function encrypt(plain: string): string {
   return ["v1", iv.toString("base64"), cipher.getAuthTag().toString("base64"), enc.toString("base64")].join(":");
 }
 
+export const UNREADABLE_SECRET = "The saved Meta or Google connection can't be read (the server's encryption key changed). Connect again in Settings.";
+
 export function decrypt(payload: string): string {
+  const k = key(); // a missing or malformed key keeps its own message
   const [v, iv, tag, data] = payload.split(":");
-  if (v !== "v1") throw new Error("Unknown secret format");
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key(), Buffer.from(iv, "base64"));
-  decipher.setAuthTag(Buffer.from(tag, "base64"));
-  return Buffer.concat([decipher.update(Buffer.from(data, "base64")), decipher.final()]).toString("utf8");
+  try {
+    if (v !== "v1" || !iv || !tag || data === undefined) throw new Error("Unknown secret format");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", k, Buffer.from(iv, "base64"));
+    decipher.setAuthTag(Buffer.from(tag, "base64"));
+    return Buffer.concat([decipher.update(Buffer.from(data, "base64")), decipher.final()]).toString("utf8");
+  } catch {
+    // Saved with another APP_ENCRYPTION_KEY (or damaged): say what to do, not a crypto error.
+    throw new Error(UNREADABLE_SECRET);
+  }
 }
 
 export function sha256(input: string | Buffer): string {

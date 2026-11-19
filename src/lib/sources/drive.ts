@@ -9,7 +9,8 @@ import { db } from "../db";
 import type { FileSource } from "../engine/launcher";
 import { kindFromName, probeFile, ratioOf, sha256File } from "../engine/media";
 import { getBatch, updateAsset } from "../store";
-import type { AssetRow } from "../types";
+import type { AssetRow, BatchRow } from "../types";
+import { getMedia } from "../meta/upload";
 
 // Google Drive: read-only. Files are downloaded to the server's disk, then uploaded to Meta.
 // Nothing in Drive is ever shared or made public.
@@ -155,6 +156,8 @@ export const driveFiles: FileSource = {
   async ensureLocal(asset: AssetRow) {
     if (asset.local_path && asset.sha256 && fs.existsSync(asset.local_path)) return { ...asset, local_path: asset.local_path, sha256: asset.sha256 };
     const batch = getBatch(asset.batch_id)!;
+    const twin = sameFileInLaunch(asset, batch);
+    if (twin) return twin;
     if (!batch.created_by) throw new DriveAccessError("This batch has no owner, so its Drive files can't be downloaded.");
     const dest = path.join(config.filesDir, batch.key, `${asset.source_ref}_${asset.filename.replace(/[^\w.\- ]/g, "_")}`);
     if (!fs.existsSync(dest)) await download(batch.created_by, asset.source_ref, dest);
@@ -166,6 +169,33 @@ export const driveFiles: FileSource = {
   },
 };
 
+/**
+ * The same ads launched into several ad sets: each extra ad set is a batch of its own, made from the
+ * main batch before anything was downloaded. Its Drive files are the main batch's files (same Drive
+ * file ID, same launch): when Meta already has that file, nothing is downloaded again. If the main
+ * batch's copy is still on the server, it is used instead of a second download.
+ */
+function sameFileInLaunch(asset: AssetRow, batch: BatchRow): (AssetRow & { local_path: string; sha256: string }) | null {
+  if (!batch.group_key || !asset.source_ref) return null;
+  const twins = db()
+    .prepare(
+      `SELECT a.sha256, a.local_path, a.width, a.height, a.duration_sec, a.ratio, a.size_bytes FROM assets a JOIN batches b ON b.id = a.batch_id
+       WHERE a.source_kind = 'drive' AND a.source_ref = ? AND a.id != ? AND a.sha256 IS NOT NULL AND b.group_key = ? AND b.ad_account_id = ? ORDER BY a.id`,
+    )
+    .all(asset.source_ref, asset.id, batch.group_key, batch.ad_account_id) as { sha256: string; local_path: string | null; width: number | null; height: number | null; duration_sec: number | null; ratio: AssetRow["ratio"]; size_bytes: number }[];
+  for (const t of twins) {
+    const media = getMedia(batch.ad_account_id, t.sha256);
+    const inMeta = !!media && media.status === "ready" && (asset.kind === "image" ? !!media.image_hash : !!media.video_id && !!(media.thumbnail_url || media.thumbnail_hash));
+    const onDisk = !!t.local_path && fs.existsSync(t.local_path);
+    if (!inMeta && !onDisk) continue;
+    // Only the checksum and size are stored: the file itself belongs to the main batch (its cleanup removes it).
+    const patch = { sha256: t.sha256, width: t.width, height: t.height, duration_sec: t.duration_sec, ratio: t.ratio, size_bytes: t.size_bytes };
+    updateAsset(asset.id, patch);
+    return { ...asset, ...patch, local_path: onDisk ? t.local_path! : "", sha256: t.sha256 };
+  }
+  return null;
+}
+
 /** One FileSource for any asset: Drive files are fetched, local and uploaded files are used as they are. */
 export const anyFiles: FileSource = {
   async ensureLocal(asset) {
@@ -174,3 +204,29 @@ export const anyFiles: FileSource = {
     return localFiles.ensureLocal(asset);
   },
 };
+
+/** A Drive file link (…/file/d/<id>/…, ?id=<id>) or a bare file ID → the file ID. */
+export function parseFileId(input: string): string | null {
+  const s = input.trim();
+  const m = /\/d\/([A-Za-z0-9_-]{10,})/.exec(s) ?? /[?&]id=([A-Za-z0-9_-]{10,})/.exec(s);
+  if (m) return m[1];
+  return /^[A-Za-z0-9_-]{10,}$/.test(s) ? s : null;
+}
+
+/** Download one Drive file (to swap the image or video of an existing ad). */
+export async function downloadDriveFile(email: string, link: string): Promise<{ path: string; name: string; kind: "image" | "video" }> {
+  const id = parseFileId(link);
+  if (!id) throw new Error(`"${link}" is not a Google Drive file link.`);
+  const d = driveApi({ version: "v3", auth: authFor(email) });
+  let meta: drive_v3.Schema$File;
+  try {
+    meta = (await d.files.get({ fileId: id, fields: "id, name, mimeType", supportsAllDrives: true })).data;
+  } catch (e) {
+    throw plainDriveError(e, "the file");
+  }
+  const kind = kindFromName(meta.name ?? "", meta.mimeType ?? "");
+  if (kind === "unsupported") throw new Error(`${meta.name} is not a JPG, PNG, MP4 or MOV file.`);
+  const dest = path.join(config.dataDir, "tmp", `swap_${id}_${(meta.name ?? "file").replace(/[^\w.\- ]/g, "_")}`);
+  if (!fs.existsSync(dest)) await download(email, id, dest);
+  return { path: dest, name: meta.name ?? id, kind };
+}

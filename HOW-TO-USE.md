@@ -35,7 +35,9 @@ If the Facebook login can't see your ad account, open **Paste a token instead** 
    - Red items are **errors**: fix them first (the message says how).
    - Orange items are **warnings**: tick **I read the warnings** if you are fine with them.
 8. **Launch and summary.** Choose **Create paused**, **Launch now** (turned on once every ad is in) or **Schedule** (turned on at a date and time). To put the same ads into more ad sets, tick them under **Also put the same ads into more ad sets**.
-   - Read the **Summary**: ad account, Facebook Page and Instagram account (with photo, ID and link), campaign, every ad set's budget, bid, schedule, audience and placements, the **total daily budget**, copy and link.
+   - Read the **Summary**: ad account, Facebook Page and Instagram account (with photo, ID and link), campaign, every ad set's budget, bid, schedule, audience and placements, the **total daily budget**, copy and link, and the checks (ad account status, payment method, spending limit, pixel on the landing page).
+   - **Preview in Meta** next to each ad opens Meta's own preview for Feed, Stories and Reels before anything is created (image ads; video ads after upload).
+   - Where they go can also be **One new ad set for all the ads** (a paused copy of the ad set you pick).
 9. Press **Launch**. When the ads will be turned on, type the total daily budget from the summary first: nothing goes live without this. The bar shows the time it will take, for example "about 20 minutes". Meta limits how fast a new app may create ads, so a big batch takes a while. You can close the page; the launch carries on. **Stop the launch** stops it after the current step; ads already created stay paused.
 
 ## After the launch
@@ -53,6 +55,14 @@ If the Facebook login can't see your ad account, open **Paste a token instead** 
 
 Every change becomes a **plan** first. The plan page shows the summary: each step, every budget, the total daily budget, what turns on, and warnings for budgets that look too high. Nothing changes in Meta until you press **Run the plan**. A plan that turns anything on asks you to type the total daily budget. A plan can run at a set time, and can be cancelled until it runs. Nothing can be deleted: turn things off instead.
 
+**More on plans:**
+- A later step can use what an earlier step makes: give a step a `ref` (for example `c1`) and use `$c1` later; `$copies.2` is the second of several copies.
+- If a plan stops part-way, open it, fix the step and press **Try the rest again**. Steps that finished are never run again.
+- **Undo this plan** makes a new plan that puts names, budgets, bids, audiences and on/off back as they were and turns off what the plan made. You check it before it runs.
+- **Ads:** under each ad set, **Show ads** lets you copy an ad into other ad sets (same post, so likes and comments add up), change its texts, link, button or file (a Google Drive file link), rename several at once, or turn it on or off.
+- **Audiences:** make website visitor, video viewer, Page, Instagram, lead form and customer list audiences, and lookalikes (1–10%). Customer lists are sent to Meta hashed; the launcher keeps only the hashes.
+- **Delivery:** after something runs, **Check delivery** shows per ad set and ad whether it is delivering, in review, approved, rejected (with Meta's reason) or learning.
+
 ## Results
 
 **Results** shows spend, impressions, clicks, leads, cost per lead and any other Meta metric, per campaign, ad set or ad, for any dates, split by age, gender, placement, region or day. **Edit columns** saves sets of columns, like Ads Manager's presets. **Custom metrics** are your own formulas, for example *Cost per site visit = spend / actions:offsite_conversion.fb_pixel_custom*.
@@ -67,12 +77,13 @@ Every change becomes a **plan** first. The plan page shows the summary: each ste
 - **Copy templates:** texts, headlines, description, button, landing page, UTM.
 - **Naming templates:** for ads, new ad sets and new campaigns, such as `{date}_{creative}_{angle}_{format}` or `{date}_{persona}_{budget}_{n}`, with a live preview.
 - **Meta settings presets:** Page and Instagram account (with photo, ID and link), each AI enhancement on or off, multi-advertiser ads. An Instagram account that the ad account may not use is marked: Meta would refuse every ad with it.
-- **Claude connection:** create your key for Claude (see below).
+- **Claude connection:** create your key for Claude (see below). It also shows which version of the Claude Desktop extension you have.
+- **Safety:** a daily budget ceiling no launch or plan can go above (Claude can't change it), and failure emails.
 
 ## Use it from Claude
 
 1. In the launcher: **Settings → Claude connection → Create a key**. Copy the key.
-2. **Claude Desktop:** download **sahajta-ads.mcpb** from the same page and double-click it. Paste the key when Claude asks.
+2. **Claude Desktop:** download **sahajta-ads.mcpb** from the same page and double-click it. Paste the key when Claude asks. From version 0.3.0, new launcher tools show up after you restart Claude Desktop; you don't need to install it again.
 3. Then ask Claude, for example: *"Launch the reels in this Drive folder into the November test ad set with the site-visit copy."* or *"Make 15 ad sets in a new leads campaign, budgets ₹500 to ₹1,500, these 3 ads in each."* or *"Show me cost per lead by ad set for the last 7 days."* Claude first shows which ad account, Page and Instagram account it uses and the full summary with every budget and the total, and asks before anything runs. To turn anything on, you tell Claude the total daily budget yourself.
 
 If something looks wrong, open the batch in the launcher (Claude gives you the link) and fix it there.

@@ -19,7 +19,9 @@ import { runBatch } from "@/lib/engine/launcher";
 import { autoGroup, buildPreview } from "@/lib/engine/preview";
 import { buildCreative, clean } from "@/lib/meta/creative";
 import { MetaError } from "@/lib/meta/errors";
-import { clientFor } from "@/lib/meta/factory";
+import { clientFor, useBackgroundClients } from "@/lib/meta/factory";
+
+useBackgroundClients();
 import { realClock } from "@/lib/meta/pacer";
 import { uploadImage, uploadVideo, videoStatus, videoThumbnail } from "@/lib/meta/upload";
 import { sha256File } from "@/lib/engine/media";

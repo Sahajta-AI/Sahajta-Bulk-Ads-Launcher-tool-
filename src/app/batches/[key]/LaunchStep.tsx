@@ -5,46 +5,48 @@ import type { LaunchSummary } from "@/lib/manage/golive";
 import type { BatchView, CampaignInfo, ConnectionSummary } from "@/lib/service";
 import { api } from "../../client-api";
 import IdentityCard from "../../IdentityCard";
+import { isoToIstInput, istInputToIso } from "../../manage/util";
+import { msgClass } from "../../msg";
+import { summaryFor } from "./batch-logic";
 
 // Step 7: when the ads go live, more ad sets for the same ads, and the pre-launch summary
 // (accounts, every budget and the total, schedule, audience, placements, copy) that must be
 // read before Launch. A launch that turns ads on needs the total daily budget typed back.
 
-/** ISO → value for <input type="datetime-local"> in the browser's time (India). */
-function toLocalInput(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 export interface Summary { connection: ConnectionSummary; launch: LaunchSummary | null }
 
-export function useSummary(batchKey: string, deps: unknown[]) {
-  const [summary, setSummary] = useState<Summary | null>(null);
+/**
+ * The pre-launch summary (it reads Meta). Asked for when `key` changes; null = don't ask
+ * (batch not loaded yet, or already launched). `retry` asks again after an error. A summary asked
+ * for an earlier key is never shown (its total may be out of date), only "Asking Meta…".
+ */
+export function useSummary(batchKey: string, key: string | null) {
+  const [got, setGot] = useState<{ key: string | null; value: Summary } | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [again, setAgain] = useState(0);
   useEffect(() => {
+    if (key === null) return;
     let live = true;
     setLoading(true);
+    setError("");
     api<Summary>(`/api/batches/${batchKey}/summary`)
-      .then((s) => { if (live) { setSummary(s); setError(""); } })
+      .then((s) => { if (live) setGot({ key, value: s }); })
       .catch((e: Error) => { if (live) setError(e.message); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-  return { summary, error, loading };
+  }, [batchKey, key, again]);
+  return { summary: summaryFor(got, key), error, loading, retry: () => setAgain((n) => n + 1) };
 }
 
-export default function LaunchStep({ view, dest, patch, summary, summaryError, summaryLoading }: {
+export default function LaunchStep({ view, dest, patch, summary, summaryError, summaryLoading, retrySummary }: {
   view: BatchView;
   dest: CampaignInfo[] | null;
   patch: (b: Record<string, unknown>) => void;
   summary: Summary | null;
   summaryError: string;
   summaryLoading: boolean;
+  retrySummary: () => void;
 }) {
   const s = view.settings;
   const extraIds = new Set(s.extraAdsets.map((x) => x.id));
@@ -74,7 +76,7 @@ export default function LaunchStep({ view, dest, patch, summary, summaryError, s
       {s.goLive === "at" && (
         <label className="field" style={{ marginTop: 10, maxWidth: 280 }}>
           <span>Turn on at (India time)</span>
-          <input type="datetime-local" defaultValue={toLocalInput(s.goLiveAt)} key={s.goLiveAt ?? "none"} onBlur={(e) => e.target.value && patch({ goLiveAt: new Date(e.target.value).toISOString() })} />
+          <input type="datetime-local" defaultValue={isoToIstInput(s.goLiveAt)} key={s.goLiveAt ?? "none"} onBlur={(e) => e.target.value && e.target.value !== isoToIstInput(s.goLiveAt) && patch({ goLiveAt: istInputToIso(e.target.value) })} />
         </label>
       )}
 
@@ -102,8 +104,12 @@ export default function LaunchStep({ view, dest, patch, summary, summaryError, s
       </details>
 
       <h3 style={{ marginTop: 18 }}>Summary</h3>
-      {summaryError && <div className="msg error">{summaryError}</div>}
-      {summaryLoading && !summary && <p className="muted">Asking Meta for the budgets…</p>}
+      {summaryError && (
+        <div className={msgClass(summaryError)}>
+          {summaryError} <button className="link" disabled={summaryLoading} onClick={retrySummary}>{summaryLoading ? "Asking Meta…" : "Try again"}</button>
+        </div>
+      )}
+      {summaryLoading && !summary && !summaryError && <p className="muted">Asking Meta for the budgets…</p>}
       {c && (
         <>
           <dl className="kv">
@@ -122,8 +128,15 @@ export default function LaunchStep({ view, dest, patch, summary, summaryError, s
       {l && (
         <>
           <dl className="kv">
-            <dt>Campaign</dt><dd>{l.campaign ? <>{l.campaign.name} <small>({l.campaign.status.toLowerCase()} · {l.campaign.budget})</small></> : "—"}</dd>
-            <dt>Ads</dt><dd>{l.adCount}</dd>
+            <dt>{(l.campaigns ?? []).length > 1 ? "Campaigns" : "Campaign"}</dt>
+            <dd>
+              {(l.campaigns?.length ? l.campaigns : l.campaign ? [l.campaign] : []).map((c) => (
+                <div key={c.id}>{c.name} <small>({c.status.toLowerCase()} · {c.budget})</small></div>
+              ))}
+              {!l.campaigns?.length && !l.campaign && "—"}
+            </dd>
+            <dt>Ads</dt><dd>{view.ads.length * (1 + s.extraAdsets.length)}</dd>
+            <dt>Time</dt><dd>{view.preview.estimate.text}</dd>
             <dt>When</dt><dd>{l.goLive}</dd>
             <dt>Copy</dt><dd>{l.copy.primaryTexts} primary text{l.copy.primaryTexts === 1 ? "" : "s"}, {l.copy.headlines} headline{l.copy.headlines === 1 ? "" : "s"}, {l.copy.cta.replace(/_/g, " ").toLowerCase()} → {l.copy.link ? <a href={l.copy.link} target="_blank" rel="noreferrer">{l.copy.link}</a> : <span style={{ color: "var(--err)" }}>no link</span>}</dd>
             {l.copy.utm && <><dt>Link tags</dt><dd><code style={{ overflowWrap: "anywhere" }}>{l.copy.utm}</code></dd></>}
@@ -138,7 +151,20 @@ export default function LaunchStep({ view, dest, patch, summary, summaryError, s
               </tbody>
             </table>
           </div>
+          {l.checks.filter((c) => c.level === "error").map((c) => <div key={c.code + c.message} className="msg error">{c.message}</div>)}
+          {l.checks.filter((c) => c.level === "warning").map((c) => <div key={c.code + c.message} className="msg warning">{c.message}</div>)}
+          {s.goLive !== "paused" && l.checks.some((c) => c.level === "error") && (
+            <p className="hint">Ads can&apos;t be turned on until the red items above are fixed. You can still create them paused.</p>
+          )}
           <div className="total-budget">Total daily budget: <strong>{l.totalDailyLabel}</strong></div>
+          {(l.lifetimeBudgets ?? []).length > 0 && (
+            <div className="msg info">
+              The total counts each lifetime budget as what it can spend in one day:
+              <ul style={{ margin: "6px 0 0", paddingLeft: 20 }}>
+                {l.lifetimeBudgets.map((x) => <li key={x}>{x}</li>)}
+              </ul>
+            </div>
+          )}
           {l.alsoSpends.map((x) => <div key={x} className="msg warning">{x}</div>)}
           {l.warnings.map((w) => <div key={w} className="msg warning">{w}</div>)}
         </>

@@ -54,7 +54,7 @@ All routes need a signed-in session or `Authorization: Bearer <api key>`. Errors
 
 | Method | Path | Does |
 |---|---|---|
-| GET | `/api/health` | Public. App, database and worker heartbeat. 503 if the worker is silent > 2 min. |
+| GET | `/api/health` | Public. `ok` (app, database and worker heartbeat) and the age in hours of the last backup and the last off-site copy. 503 if the worker is silent > 2 min or the database can't be read. No backup messages (they can name server paths): those are in Settings → Safety. |
 | GET | `/api/destinations[?refresh=1]` | Campaigns with their ad sets (`isDynamicCreative`). |
 | GET | `/api/identities` | Pages and Instagram accounts of the ad account. |
 | GET/POST | `/api/templates` | List all templates / create or update one (`kind`: copy, naming, preset). |

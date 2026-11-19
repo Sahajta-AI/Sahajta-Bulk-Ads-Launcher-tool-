@@ -61,6 +61,9 @@ if [ -n "${RESTORE_FROM:-}" ]; then
   ./deploy/restore.sh "$RESTORE_FROM"
 fi
 $DOCKER compose up -d --build
+# Each rebuild leaves the old image and build layers behind (about 1-2 GB): remove them.
+$DOCKER image prune -f || true
+$DOCKER builder prune -f --filter until=24h || true
 for i in $(seq 1 60); do
   if $DOCKER compose exec -T app curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then break; fi
   sleep 5

@@ -111,8 +111,8 @@ export function ListMulti({ what, picked, onChange }: { what: string; picked: Lo
   );
 }
 
-/** Search Meta as you type (interests, locations) and pick several. */
-export function SearchMulti({ what, picked, onChange, placeholder }: { what: "interests" | "locations"; picked: LookupItem[]; onChange: (v: LookupItem[]) => void; placeholder: string }) {
+/** Search Meta as you type (interests, locations, languages) and pick several. */
+export function SearchMulti({ what, picked, onChange, placeholder }: { what: "interests" | "locations" | "languages"; picked: LookupItem[]; onChange: (v: LookupItem[]) => void; placeholder: string }) {
   const [q, setQ] = useState("");
   const [found, setFound] = useState<LookupItem[]>([]);
   const [error, setError] = useState("");

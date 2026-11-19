@@ -71,6 +71,19 @@ export function adCopy(b: BatchRow, ad: AdRow): Copy {
     cta: pick(o.cta, base.cta),
     linkUrl: pick(o.linkUrl, base.linkUrl),
     utmTemplate: pick(o.utmTemplate, base.utmTemplate),
+    displayLink: pick(o.displayLink, base.displayLink ?? ""),
+    leadFormId: pick(o.leadFormId, base.leadFormId ?? ""),
+  };
+}
+
+/** The batch's settings preset with this ad's own enhancements and multi-advertiser choice, if it has them. */
+export function adPreset(b: BatchRow, ad: AdRow): Preset {
+  const base = batchPreset(b);
+  const o = json<CopyOverride>(ad.copy_override, {});
+  return {
+    ...base,
+    ...(o.enhancements ? { enhancements: o.enhancements } : {}),
+    ...(typeof o.multiAdvertiser === "boolean" ? { multiAdvertiser: o.multiAdvertiser } : {}),
   };
 }
 
@@ -99,4 +112,29 @@ export function cacheSet(key: string, value: unknown, ttlMs: number) {
 
 export function cacheDelete(prefix: string) {
   db().prepare("DELETE FROM cache WHERE key LIKE ?").run(`${prefix}%`);
+}
+
+/** The launch a batch belongs to: its group_key (the same ads into several ad sets), or itself alone. */
+export function launchOf(b: Pick<BatchRow, "id" | "group_key">): string {
+  return b.group_key ?? `batch:${b.id}`;
+}
+
+export interface MadeCreative {
+  meta_creative_id: string;
+  ad_key: string;
+  feature_warnings: string;
+}
+
+/** A creative this launch already made with this hash (whatever happened to the ad that made it since). */
+export function madeCreative(b: BatchRow, hash: string): MadeCreative | undefined {
+  return db()
+    .prepare("SELECT meta_creative_id, ad_key, feature_warnings FROM launch_creatives WHERE launch = ? AND ad_account_id = ? AND creative_hash = ?")
+    .get(launchOf(b), b.ad_account_id, hash) as MadeCreative | undefined;
+}
+
+/** Remember a creative this launch made (the first one with a hash stays). */
+export function saveMadeCreative(b: BatchRow, hash: string, c: MadeCreative) {
+  db()
+    .prepare("INSERT OR IGNORE INTO launch_creatives (launch, ad_account_id, creative_hash, meta_creative_id, ad_key, feature_warnings) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(launchOf(b), b.ad_account_id, hash, c.meta_creative_id, c.ad_key, c.feature_warnings || "[]");
 }

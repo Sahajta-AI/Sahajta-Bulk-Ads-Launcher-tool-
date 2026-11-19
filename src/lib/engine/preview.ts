@@ -1,10 +1,13 @@
+import fs from "node:fs";
 import { db } from "../db";
-import { GB, freeBytes } from "../cleanup";
+import { GB, freeBytes, removeUnusedUploads } from "../cleanup";
+import { CTA_TYPES } from "../manage/cta";
 import { pacTextsLimited } from "../meta/creative";
 import { getMedia } from "../meta/upload";
-import { adChecks, adCopy, batchPreset, getAdAssets, getAds, getAssets, getBatch, updateAd, updateBatch } from "../store";
+import { DEFAULT_CAP, WINDOW_MS, type PacerState } from "../meta/pacer";
+import { adChecks, adCopy, adPreset, batchPreset, getAdAssets, getAds, getAssets, getBatch, updateAd, updateBatch } from "../store";
 import type { AdRow, AssetRow, BatchRow, Check } from "../types";
-import { estimate, type Estimate, type PlanAd } from "./estimate";
+import { estimateWork, timeLeft, type Estimate, type LaunchWork, type RateLimits } from "./estimate";
 import { formatLabel, groupFiles, slotOf } from "./grouping";
 import { humanSize, ratioText } from "./media";
 import { metaName, renderName, renderUtm, unknownTokens, type NameContext } from "./naming";
@@ -68,20 +71,29 @@ export function renumber(batchId: number) {
   });
 }
 
-/** Drag-and-drop: move a file to another ad, or to a new ad of its own. */
+/**
+ * Drag-and-drop: move a file to another ad, or to a new ad of its own. The file keeps the copy and
+ * angle of the ad it was in (batch zrhtj: moving IMG3 out and back lost its own copy), so an ad of
+ * its own gets that copy back. An ad keeps its own copy while it still has files.
+ */
 export function moveAsset(batchId: number, assetId: number, toAdId: number | "new") {
   const batch = getBatch(batchId)!;
   if (batch.status !== "draft") throw new Error("This batch has already been launched; its grouping can't change.");
   const asset = db().prepare("SELECT * FROM assets WHERE id = ? AND batch_id = ?").get(assetId, batchId) as AssetRow | undefined;
   if (!asset) throw new Error("File not found in this batch.");
   db().transaction(() => {
+    // Remember the copy of the ad the file leaves (if it had its own).
+    const from = asset.ad_id ? (db().prepare("SELECT copy_override, angle FROM ads WHERE id = ?").get(asset.ad_id) as { copy_override: string | null; angle: string | null } | undefined) : undefined;
+    if (from && (from.copy_override || from.angle)) db().prepare("UPDATE assets SET copy_override = ?, angle = ? WHERE id = ?").run(from.copy_override, from.angle, assetId);
+    const memory = db().prepare("SELECT copy_override, angle FROM assets WHERE id = ?").get(assetId) as { copy_override: string | null; angle: string | null };
     let target: number;
     if (toAdId === "new") {
       target = newAd(batch, asset.filename.replace(/\.[^.]+$/, ""));
+      if (memory.copy_override || memory.angle) db().prepare("UPDATE ads SET copy_override = ?, angle = ? WHERE id = ?").run(memory.copy_override, memory.angle, target);
     } else {
       const ad = db().prepare("SELECT id FROM ads WHERE id = ? AND batch_id = ?").get(toAdId, batchId);
       if (!ad) throw new Error("Ad not found in this batch.");
-      target = toAdId;
+      target = toAdId; // the ad keeps its own copy; the file remembers its own for later
     }
     db().prepare("UPDATE assets SET ad_id = ? WHERE id = ?").run(target, assetId);
     renumber(batchId);
@@ -91,8 +103,11 @@ export function moveAsset(batchId: number, assetId: number, toAdId: number | "ne
 export function removeAsset(batchId: number, assetId: number) {
   const batch = getBatch(batchId)!;
   if (batch.status !== "draft") throw new Error("This batch has already been launched.");
+  const file = db().prepare("SELECT local_path FROM assets WHERE id = ? AND batch_id = ?").pluck().get(assetId, batchId) as string | null | undefined;
   db().prepare("DELETE FROM assets WHERE id = ? AND batch_id = ?").run(assetId, batchId);
   renumber(batchId);
+  // The uploaded file goes too, unless another batch (launched into another ad set) still uses it.
+  removeUnusedUploads([file ?? null]);
 }
 
 // ---------- Names ----------
@@ -119,19 +134,50 @@ export function computeNames(batchId: number) {
   const batch = getBatch(batchId)!;
   for (const ad of getAds(batchId)) {
     const ctx = adNameContext(batch, ad, getAdAssets(ad.id));
-    const adsetName = batch.adset_mode === "new_per_ad" ? renderName(batch.adset_name_template, ctx) : batch.adset_name ?? "";
-    const name = renderName(batch.ad_name_template, { ...ctx, adset: adsetName });
+    // An empty naming pattern (the box cleared) falls back to the creative name: never an ad called only "[L:key]".
+    const adsetName =
+      batch.adset_mode === "new_per_ad" ? renderName(batch.adset_name_template, ctx) || ad.creative_name
+      : batch.adset_mode === "new_shared" ? renderName(batch.adset_name_template, { ...ctx, creative: "", format: "", angle: batch.angle, n: undefined }) || `${batch.adset_name ?? "New ad set"} (batch ${batch.key})`
+      : batch.adset_name ?? "";
+    const name = renderName(batch.ad_name_template, { ...ctx, adset: adsetName }) || ad.creative_name;
     updateAd(ad.id, { name, adset_name: adsetName });
   }
 }
 
 // ---------- Checks ----------
 
+/** What the launcher knows about an ad set it puts ads into (from the cached ad-set list, no extra calls). */
+export interface AdsetDest {
+  id: string;
+  name: string;
+  is_dynamic_creative?: boolean;
+  ad_count?: number;
+  /** Meta's destination_type: ON_AD (Instant form), WEBSITE, WHATSAPP, MESSENGER… */
+  destination_type?: string;
+  optimization_goal?: string;
+  campaignName?: string;
+}
+
 export interface DestinationInfo {
-  adset?: { id: string; name: string; is_dynamic_creative?: boolean; ad_count?: number } | null;
+  adset?: AdsetDest | null;
   /** Set when Meta says the ad account may not use the preset's Instagram account (code 200/1815199). */
   igProblem?: string;
+  /** The template ad set has a minimum spend that a campaign budget can refuse (batch u2942). */
+  templateMinSpend?: string;
+  /** Checks that couldn't run just now (Meta limiting calls, login expired…): shown as warnings, never a silent pass. */
+  unchecked?: string[];
+  /** The extra ad sets that get the same ads (launched as batches of their own). `missing`: not found in Meta. */
+  extras?: (AdsetDest & { missing?: boolean })[];
 }
+
+/** An Instant form (lead form) ad set: Meta refuses ads without a lead form on the button. A leads goal
+ *  with destination "On your ad" (ON_AD), or with no destination (older lead ad sets). Messenger, calls
+ *  and WhatsApp lead ad sets have their own destination and are not Instant form ad sets. */
+export const isInstantForm = (a?: AdsetDest | null) =>
+  !!a && ["LEAD_GENERATION", "QUALITY_LEAD"].includes(a.optimization_goal ?? "") && (!a.destination_type || a.destination_type === "ON_AD" || a.destination_type === "UNDEFINED");
+const isWhatsApp = (a?: AdsetDest | null) => !!a && a.destination_type === "WHATSAPP";
+/** We know what the ad set does (the cached list has its destination or goal). */
+const knownGoal = (a?: AdsetDest | null) => !!a && !!(a.destination_type || a.optimization_goal);
 
 /** Meta allows at most 50 ads (not archived or deleted) in one ad set. */
 export const MAX_ADS_PER_ADSET = 50;
@@ -152,6 +198,10 @@ export function checkAd(batch: BatchRow, ad: AdRow, assets: AssetRow[]): Check[]
 
   // Files
   for (const a of assets) {
+    // Uploaded files are removed from the server some time after a launch, or from a draft left for 14 days.
+    if (a.source_kind !== "drive" && (!a.local_path || !fs.existsSync(a.local_path))) {
+      out.push({ level: "error", code: "file_missing", message: `${a.filename} is no longer on the server (files are removed some time after a launch, or when a draft is left for 14 days). Remove it from this ad and upload it again.` });
+    }
     if (a.kind === "image" && a.size_bytes > LIMITS.imageMaxBytes) out.push({ level: "error", code: "file_too_big", message: `${a.filename} is ${humanSize(a.size_bytes)}. Images must be under 30 MB.` });
     if (a.kind === "video" && a.size_bytes > LIMITS.videoMaxBytes) out.push({ level: "error", code: "file_too_big", message: `${a.filename} is ${humanSize(a.size_bytes)}. Videos must be under 4 GB.` });
     if (a.kind === "video" && a.duration_sec && a.duration_sec > LIMITS.videoMaxSec) out.push({ level: "error", code: "video_too_long", message: `${a.filename} is ${Math.round(a.duration_sec / 60)} minutes long. Meta's limit is 241 minutes.` });
@@ -164,8 +214,24 @@ export function checkAd(batch: BatchRow, ad: AdRow, assets: AssetRow[]): Check[]
     else if (a.kind === "video" && a.width < LIMITS.videoMinWidth) out.push({ level: "warning", code: "low_res", message: `${a.filename} is ${ratioText(a.width, a.height)}. It may look blurry.` });
   }
 
+  const isCarousel = (() => {
+    try {
+      return (JSON.parse(ad.copy_override ?? "{}") as { format?: string }).format === "carousel";
+    } catch {
+      return false;
+    }
+  })();
+  if (isCarousel) {
+    // Carousel: each file is a card, in the order shown; images and videos may mix.
+    if (assets.length < 2) out.push({ level: "error", code: "carousel_short", message: "A carousel needs at least 2 files. Drag more files into this ad, or switch it back to a single ad." });
+    if (assets.length > 10) out.push({ level: "error", code: "carousel_long", message: `A carousel can have at most 10 cards; this ad has ${assets.length} files.` });
+    if (assets.some((a) => a.ratio && a.ratio !== "1x1")) out.push({ level: "warning", code: "carousel_ratio", message: "Carousel cards show best as square (1:1) files; other shapes are cropped." });
+    if (copy.headlines.length > 1 && copy.headlines.length < assets.length) out.push({ level: "warning", code: "carousel_headlines", message: `${assets.length} cards and ${copy.headlines.length} headlines: cards without their own headline use the first one.` });
+    if (copy.primaryTexts.length > 1) out.push({ level: "warning", code: "carousel_texts", message: `A carousel uses only the first primary text; the other ${copy.primaryTexts.length - 1} are not sent to Meta.` });
+  }
+
   // Placement grouping
-  if (assets.length > 1) {
+  if (assets.length > 1 && !isCarousel) {
     const kinds = new Set(assets.map((a) => a.kind));
     if (kinds.size > 1) out.push({ level: "error", code: "mixed_kinds", message: "This ad mixes images and videos. Drag them into separate ads." });
     const bySlot = new Map<string, AssetRow[]>();
@@ -205,9 +271,56 @@ export function checkAd(batch: BatchRow, ad: AdRow, assets: AssetRow[]): Check[]
   if (copy.description) textChecks("Description", [copy.description], LIMITS.descriptionSoft, LIMITS.descriptionHard, out);
   if (!copy.linkUrl) out.push({ level: "error", code: "no_link", message: "No landing page URL." });
   else if (!/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(copy.linkUrl)) out.push({ level: "error", code: "bad_link", message: `The landing page "${copy.linkUrl}" is not a full web address. It must start with https://` });
+  if (copy.cta && !CTA_TYPES.includes(copy.cta)) {
+    out.push({ level: "error", code: "cta_unsupported", message: `The button "${copy.cta}" can't be used by the launcher yet (Meta needs a phone number, address or Messenger setup for it). Pick another button in the copy.` });
+  }
   const utmUnknown = unknownTokens(copy.utmTemplate);
   if (utmUnknown.length) out.push({ level: "warning", code: "utm_token", message: `UTM template has unknown words in braces: ${utmUnknown.join(", ")}. They will be sent as typed.` });
 
+  return out;
+}
+
+/** "ads 1, 2 and 5" / "every ad". */
+function whichAds(list: AdRow[], all: number): string {
+  if (list.length === all) return "every ad";
+  const n = list.map((a) => a.position);
+  return `ad${n.length > 1 ? "s" : ""} ${n.length > 1 ? `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}` : n[0]}`;
+}
+
+/**
+ * Does the copy fit what each target ad set does? An Instant form ad set needs a lead form on every
+ * ad, a WhatsApp ad set needs the "Send WhatsApp message" button. Meta refuses the ads otherwise,
+ * after the files were already uploaded.
+ */
+function fitChecks(batch: BatchRow, ads: AdRow[], dest: DestinationInfo): Check[] {
+  const out: Check[] = [];
+  if (!ads.length) return out;
+  const copies = ads.map((ad) => ({ ad, copy: adCopy(batch, ad) }));
+  const main = dest.adset ?? null;
+  const targets: { a: AdsetDest; label: string; extra: boolean }[] = [];
+  if (main) targets.push({ a: main, label: batch.adset_mode === "existing" ? `"${main.name}"` : `The template ad set "${main.name}"`, extra: false });
+  for (const x of dest.extras ?? []) if (!x.missing) targets.push({ a: x, label: `Extra ad set "${x.name}"`, extra: true });
+  for (const t of targets) {
+    if (!knownGoal(t.a)) continue;
+    if (isInstantForm(t.a)) {
+      const missing = copies.filter((c) => !c.copy.leadFormId).map((c) => c.ad);
+      if (missing.length) {
+        const who = missing.length === ads.length ? "the copy has none" : `${whichAds(missing, ads.length)} ${missing.length === 1 ? "has" : "have"} none`;
+        out.push({ level: "error", code: "lead_form_needed", message: `${t.label} collects leads with an Instant form, so Meta refuses ads without a lead form, and ${who}. Add the lead form ID to the copy (copy template → Lead form), or pick an ad set that sends people to a website.` });
+      }
+    } else if (copies.some((c) => c.copy.leadFormId)) {
+      const withForm = copies.filter((c) => c.copy.leadFormId).map((c) => c.ad);
+      // The copy was made for an Instant form ad set and the same ads also go into one that isn't.
+      const level = t.extra && isInstantForm(main) ? "error" : "warning";
+      out.push({ level, code: "lead_form_unused", message: `${t.label} doesn't collect leads with an Instant form, but ${whichAds(withForm, ads.length)} open${withForm.length === 1 ? "s" : ""} a lead form. Meta may refuse ${withForm.length === 1 ? "it" : "them"}. Remove the lead form from the copy, or ${t.extra ? "untick this ad set" : "pick an Instant form ad set"}.` });
+    }
+    if (isWhatsApp(t.a)) {
+      const wrong = copies.filter((c) => c.copy.cta !== "WHATSAPP_MESSAGE").map((c) => c.ad);
+      if (wrong.length) {
+        out.push({ level: "error", code: "whatsapp_button", message: `${t.label} sends people to WhatsApp, so Meta needs the "Send WhatsApp message" button, and ${whichAds(wrong, ads.length)} use${wrong.length === 1 ? "s" : ""} another button. Change the button in the copy, or pick another ad set.` });
+      }
+    }
+  }
   return out;
 }
 
@@ -225,7 +338,11 @@ export function checkBatch(batch: BatchRow, dest: DestinationInfo): Check[] {
     }
   }
   if (!batch.campaign_id) out.push({ level: "error", code: "no_campaign", message: "Pick a campaign." });
-  if (!batch.adset_id) out.push({ level: "error", code: "no_adset", message: batch.adset_mode === "new_per_ad" ? "Pick the ad set to copy for each new ad set." : "Pick an ad set." });
+  if (!batch.adset_id) out.push({ level: "error", code: "no_adset", message: batch.adset_mode === "existing" ? "Pick an ad set." : "Pick the ad set to copy for the new ad set." });
+  if (batch.adset_mode === "new_shared" && ads.length > MAX_ADS_PER_ADSET) {
+    out.push({ level: "error", code: "adset_full", message: `Meta allows ${MAX_ADS_PER_ADSET} ads in one ad set and this batch has ${ads.length}. Use "a new ad set per ad", or split the files into smaller batches.` });
+  }
+  if (batch.adset_mode !== "existing" && dest.templateMinSpend) out.push({ level: "warning", code: "min_spend", message: dest.templateMinSpend });
   if (dest.adset === null) out.push({ level: "error", code: "adset_missing", message: "The chosen ad set no longer exists in Meta. Pick another one." });
   if (batch.adset_mode === "existing" && ads.length) {
     const already = dest.adset?.ad_count ?? 0;
@@ -244,6 +361,20 @@ export function checkBatch(batch: BatchRow, dest: DestinationInfo): Check[] {
       message: `"${dest.adset.name}" has Dynamic creative switched on. Ads from this tool can't go there: Meta would mix their files and texts into one ad. Pick another ad set, or switch Dynamic creative off in Ads Manager.`,
     });
   }
+  // Extra ad sets (the same ads, launched as batches of their own).
+  for (const x of dest.extras ?? []) {
+    const label = `Extra ad set "${x.name}"`;
+    if (x.missing) {
+      out.push({ level: "error", code: "adset_missing", message: `${label} no longer exists in Meta. Untick it, or pick another one.` });
+      continue;
+    }
+    if (x.is_dynamic_creative) out.push({ level: "error", code: "dynamic_creative", message: `${label} has Dynamic creative switched on. Ads from this tool can't go there: Meta would mix their files and texts into one ad. Untick it, or switch Dynamic creative off in Ads Manager.` });
+    if (batch.adset_mode === "existing" && ads.length && (x.ad_count ?? 0) + ads.length > MAX_ADS_PER_ADSET) {
+      out.push({ level: "error", code: "adset_full", message: `Meta allows ${MAX_ADS_PER_ADSET} ads in one ad set. ${label} already has ${x.ad_count ?? 0}, and this batch adds ${ads.length}. Untick it, or split the files into smaller batches.` });
+    }
+  }
+  out.push(...fitChecks(batch, ads, dest));
+  for (const u of dest.unchecked ?? []) out.push({ level: "warning", code: "dest_unchecked", message: u });
   if (!preset.pageId) out.push({ level: "error", code: "no_page", message: "Pick a Facebook Page in Meta settings." });
   if (dest.igProblem) out.push({ level: "error", code: "ig_not_allowed", message: dest.igProblem });
   if (batch.go_live === "at" && (!batch.go_live_at || Date.parse(batch.go_live_at) < Date.now())) out.push({ level: "error", code: "go_live_time", message: "Pick a time in the future to turn the ads on." });
@@ -257,17 +388,42 @@ export function checkBatch(batch: BatchRow, dest: DestinationInfo): Check[] {
   return out;
 }
 
-/** Fetch each distinct landing page once. Not loading is a warning, not an error. */
+/**
+ * A landing page that didn't load, in plain words (also usable by other checks). `failure` is the HTTP
+ * status, or the error fetch threw.
+ */
+export function linkProblemText(url: string, failure: number | unknown): string {
+  let host = url;
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    /* keep the text */
+  }
+  if (typeof failure === "number") {
+    if (failure === 403 || failure === 429 || failure === 503) return `The site ${host} refused the launcher's check of ${url} (HTTP ${failure}); open it in a browser to confirm it works.`;
+    return `The landing page ${url} answered with error ${failure}. People clicking the ad would see an error page.`;
+  }
+  const e = failure as { name?: string; code?: string; message?: string; cause?: { code?: string; message?: string } };
+  const code = e?.cause?.code ?? e?.code ?? "";
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || /ENOTFOUND|EAI_AGAIN/.test(`${e?.message ?? ""} ${e?.cause?.message ?? ""}`)) {
+    return `The address ${host} does not exist (no DNS record). People clicking the ad would see an error page.`;
+  }
+  if (e?.name === "TimeoutError" || e?.name === "AbortError") return `The landing page ${url} did not respond in 10 seconds.`;
+  return `The landing page ${url} could not be reached${code ? ` (${code})` : ""}. Open it in a browser to check it works.`;
+}
+
+/** Fetch each distinct landing page once. The value is the problem in plain words (null = loads fine).
+ *  Not loading is a warning, not an error. */
 export async function checkLinks(urls: string[], fetchImpl: typeof fetch = fetch): Promise<Map<string, string | null>> {
   const out = new Map<string, string | null>();
   await Promise.all(
     [...new Set(urls)].filter((u) => /^https?:\/\//i.test(u)).map(async (url) => {
       try {
         const res = await fetchImpl(url, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "Mozilla/5.0 (SahajtaAdsLauncher link check)" } });
-        out.set(url, res.ok ? null : `returned error ${res.status}`);
+        out.set(url, res.ok ? null : linkProblemText(url, res.status));
         await res.body?.cancel();
       } catch (e) {
-        out.set(url, e instanceof Error && e.name === "TimeoutError" ? "did not respond in 10 seconds" : "could not be reached");
+        out.set(url, linkProblemText(url, e));
       }
     }),
   );
@@ -300,6 +456,11 @@ export interface PreviewAd {
   effectiveStatus: string | null;
   reviewIssues: string[];
   featureWarnings: string[];
+  /** Facebook post and Instagram media behind the created ad (to reuse it with "ads from a post"). */
+  metaPostId: string | null;
+  metaIgMediaId: string | null;
+  /** Something this ad left in Meta although it failed (an empty paused ad set), in plain words. */
+  leftover: string | null;
 }
 
 export interface Preview {
@@ -318,25 +479,172 @@ function placementLabel(a: AssetRow, groupSize: number): string {
   return "Unknown";
 }
 
-/** Build the preview from what is saved. `linkResults` adds landing-page warnings. */
-export function buildPreview(batchId: number, dest: DestinationInfo, capPoints: number, opts: { linkResults?: Map<string, string | null>; persist?: boolean; namePrefix?: string } = {}): Preview {
+// ---------- Time estimate of a whole launch ----------
+
+/** What Meta lets this ad account do now, from the pacer's saved numbers (no Meta call). */
+export function accountLimits(accountDbId: number, now = Date.now()): RateLimits {
+  const fixed = process.env.META_RATE_CAP_POINTS ? Number(process.env.META_RATE_CAP_POINTS) : undefined;
+  const row = db().prepare("SELECT state FROM rate_state WHERE ad_account_id = ?").get(accountDbId) as { state: string } | undefined;
+  let st: Partial<PacerState> = {};
+  try {
+    st = row ? (JSON.parse(row.state) as PacerState) : {};
+  } catch {
+    /* no numbers yet */
+  }
+  return {
+    capPoints: fixed || st.capPoints || DEFAULT_CAP,
+    tier: st.tier,
+    usedPoints: (st.log ?? []).filter(([t]) => t > now - WINDOW_MS).reduce((s, [, p]) => s + p, 0),
+    hourPct: st.lastBuc && st.lastBuc.at > now - 3_600_000 ? st.lastBuc.pct : undefined,
+  };
+}
+
+const formatOf = (ad: AdRow) => {
+  try {
+    return (JSON.parse(ad.copy_override ?? "{}") as { format?: string }).format === "carousel" ? "carousel" : "single";
+  } catch {
+    return "single";
+  }
+};
+const versionOf = (ad: AdRow) => ((JSON.parse(ad.attempts || "{}") as { copy_gen?: number }).copy_gen ?? 0) + 1;
+/** A file's identity across the batches of one launch (a Drive file has no checksum until it is downloaded). */
+const fileKey = (a: AssetRow) => (a.source_kind === "drive" ? `drive:${a.source_ref}` : (a.sha256 ?? `${a.source_kind}:${a.source_ref}`));
+
+/**
+ * The batches of this batch's launch: itself and the batches launched with it into other ad sets, plus,
+ * while it is a draft, the extra ad sets it will launch into (as batches still to come, with its ads).
+ */
+function launchRuns(batch: BatchRow): { b: BatchRow; ads: AdRow[]; virtual: boolean }[] {
+  const real = batch.group_key
+    ? (db().prepare("SELECT * FROM batches WHERE group_key = ? AND ad_account_id = ? ORDER BY id").all(batch.group_key, batch.ad_account_id) as BatchRow[])
+    : [batch];
+  const runs = real.map((b) => ({ b, ads: getAds(b.id), virtual: false }));
+  const taken = new Set(real.map((b) => b.adset_id));
+  for (const b of real.filter((x) => x.status === "draft")) {
+    let extras: { id?: string; name?: string; campaignId?: string; campaignName?: string }[] = [];
+    try {
+      extras = JSON.parse(b.extra_adsets || "[]");
+    } catch {
+      /* none */
+    }
+    for (const x of extras) {
+      if (!x?.id || taken.has(x.id)) continue;
+      taken.add(x.id);
+      const vb: BatchRow = { ...b, key: `${b.key}+${x.id}`, adset_id: x.id, adset_name: x.name ?? null, campaign_id: x.campaignId ?? b.campaign_id, campaign_name: x.campaignName ?? b.campaign_name, shared_adset_id: null };
+      runs.push({ b: vb, ads: getAds(b.id).map((a) => ({ ...a, status: "pending", meta_adset_id: null, meta_creative_id: null, meta_ad_id: null, attempts: "{}" })), virtual: true });
+    }
+  }
+  return runs;
+}
+
+/**
+ * The Meta work left in this batch's whole launch, as the launcher does it: each file uploaded once,
+ * each distinct creative made once (the ads of the other ad sets reuse it), one ad per ad set, plus the
+ * reads. Only batches that will run count (a draft, or one queued or launching).
+ */
+export function launchWork(batch: BatchRow): LaunchWork {
+  const runs = launchRuns(batch);
+  const assetsOf = new Map<number, AssetRow[]>();
+  const assets = (ad: AdRow) => {
+    if (!assetsOf.has(ad.id)) assetsOf.set(ad.id, getAdAssets(ad.id));
+    return assetsOf.get(ad.id)!;
+  };
+  // What makes two creatives the same, known before the files are in Meta: files, copy, identity, link tags, format, version.
+  const creativeKey = (b: BatchRow, ad: AdRow) => {
+    const copy = adCopy(b, ad);
+    const files = assets(ad);
+    // An ad Meta refused with another ad set's creative makes its own.
+    const own = (JSON.parse(ad.attempts || "{}") as { own_creative?: number }).own_creative ? ad.id : 0;
+    return JSON.stringify([files.map(fileKey), copy, adPreset(b, ad), renderUtm(copy.utmTemplate, adNameContext(b, ad, files)), formatOf(ad), versionOf(ad), own]);
+  };
+  // A file is in Meta when any batch of the launch has its checksum and Meta has it ready.
+  const inMeta = new Map<string, boolean>();
+  for (const { b, ads } of runs) {
+    for (const ad of ads) {
+      for (const a of assets(ad)) {
+        if (inMeta.get(fileKey(a))) continue;
+        const m = a.sha256 ? getMedia(b.ad_account_id, a.sha256) : undefined;
+        inMeta.set(fileKey(a), !!m && m.status === "ready" && !!(m.image_hash || m.video_id));
+      }
+    }
+  }
+  const made = new Set<string>();
+  const needed = new Map<string, AdRow>();
+  const w: LaunchWork = { ads: 0, adsets: 0, creatives: 0, uploads: [], newAdsets: 0, runReads: 0 };
+  for (const { b, ads } of runs) {
+    for (const ad of ads) if (ad.meta_creative_id) made.add(creativeKey(b, ad));
+    if (!["draft", "queued", "running"].includes(b.status)) continue;
+    // A run in progress leaves its failed ads for a Retry.
+    const left = ads.filter((a) => a.status !== "done" && (b.status !== "running" || a.status !== "failed"));
+    if (!left.length) continue;
+    w.ads += left.length;
+    w.adsets += b.adset_mode === "new_per_ad" ? left.length : 1;
+    if (b.status !== "running") w.runReads += b.adset_mode === "new_per_ad" ? 3 : 2;
+    if (b.adset_mode === "new_per_ad") w.newAdsets += left.filter((a) => !a.meta_adset_id).length;
+    else if (b.adset_mode === "new_shared" && !b.shared_adset_id) {
+      w.newAdsets += 1;
+      w.runReads += 1; // the look-up of the batch's new ad set by its key, before it is copied
+    }
+    for (const ad of left) if (!ad.meta_creative_id && !ad.meta_ad_id) needed.set(creativeKey(b, ad), ad);
+  }
+  const files = new Map<string, { kind: "image" | "video"; sizeBytes: number }>();
+  for (const [key, ad] of needed) {
+    if (made.has(key)) continue;
+    w.creatives++;
+    for (const a of assets(ad)) if (!inMeta.get(fileKey(a)) && (a.kind === "image" || a.kind === "video")) files.set(fileKey(a), { kind: a.kind, sizeBytes: a.size_bytes });
+  }
+  w.uploads = [...files.values()];
+  w.turnOn = turnOnWork(runs);
+  return w;
+}
+
+/**
+ * Turning the ads on when every ad is in (go-live "now" or "at a time"): every ad of the launch, every
+ * ad set they are in and the campaigns, one write each. 0 when the ads stay paused or are turned on already,
+ * and for "at a time": that turn-on runs at the chosen time, not right after the ads are made, so it is
+ * not part of the time the launch takes (the summary says when the ads are turned on).
+ */
+function turnOnWork(runs: { b: BatchRow; ads: AdRow[] }[]): number {
+  const main = runs[0]?.b;
+  if (!main || main.go_live === "paused" || main.go_live === "at" || runs.some((r) => r.b.go_live_done)) return 0;
+  const live = runs.filter((r) => r.ads.length);
+  const ads = live.reduce((n, r) => n + r.ads.length, 0);
+  const adsets = live.reduce((n, r) => n + (r.b.adset_mode === "new_per_ad" ? r.ads.length : 1), 0);
+  const campaigns = new Set(live.map((r) => r.b.campaign_id ?? r.b.key)).size;
+  return ads + adsets + campaigns;
+}
+
+/**
+ * Time left of this batch's launch (every ad set), while a batch of it is queued or launching: from how
+ * fast its ads went in over the last minutes. null when nothing of it is running.
+ */
+export function launchTimeLeft(batch: BatchRow, limits: RateLimits, now = Date.now()): Estimate | null {
+  const runs = launchRuns(batch).filter((r) => !r.virtual);
+  if (!runs.some((r) => r.b.status === "queued" || r.b.status === "running")) return null;
+  const ids = runs.map((r) => r.b.id);
+  const done = db()
+    .prepare(`SELECT done_at AS doneAt, work_points AS points FROM ads WHERE batch_id IN (${ids.map(() => "?").join(",")}) AND done_at IS NOT NULL AND done_at >= ?`)
+    .all(...ids, now - 10 * 60_000) as { doneAt: number; points: number | null }[];
+  return timeLeft(launchWork(batch), limits, done, now);
+}
+
+/** Build the preview from what is saved. `linkResults` adds landing-page warnings. `capPoints`: the ad
+ *  account's limits (accountLimits), or only its points per 5 minutes. */
+export function buildPreview(batchId: number, dest: DestinationInfo, capPoints: number | RateLimits, opts: { linkResults?: Map<string, string | null>; persist?: boolean; namePrefix?: string } = {}): Preview {
   const batch = getBatch(batchId)!;
   const isDraft = batch.status === "draft";
   if (isDraft) computeNames(batchId);
   const batchChecks = isDraft ? checkBatch(batch, dest) : [];
-  const planAds: PlanAd[] = [];
-  const ads: PreviewAd[] = getAds(batchId).map((ad) => {
+  const all0 = getAds(batchId);
+  // "One new ad set for the batch": when no ad got into it, the empty paused ad set is reported once.
+  const sharedLeft = batch.adset_mode === "new_shared" && batch.shared_adset_id && !all0.some((a) => a.meta_ad_id) ? all0.find((a) => a.status !== "done") : undefined;
+  const ads: PreviewAd[] = all0.map((ad) => {
     const assets = getAdAssets(ad.id);
     const copy = adCopy(batch, ad);
     let checks = isDraft ? checkAd(batch, ad, assets) : adChecks(ad);
     const linkProblem = opts.linkResults?.get(copy.linkUrl);
-    if (isDraft && linkProblem) checks = [...checks, { level: "warning", code: "link_down", message: `Landing page ${linkProblem}: ${copy.linkUrl}` }];
+    if (isDraft && linkProblem) checks = [...checks, { level: "warning", code: "link_down", message: linkProblem }];
     if (isDraft && opts.persist) updateAd(ad.id, { checks: JSON.stringify(checks) });
-    planAds.push({
-      done: ad.status === "done",
-      newAdset: batch.adset_mode === "new_per_ad" && !ad.meta_adset_id,
-      assets: assets.map((a) => ({ kind: a.kind as "image" | "video", sizeBytes: a.size_bytes, alreadyUploaded: !!(a.sha256 && getMedia(batch.ad_account_id, a.sha256)?.status === "ready") })),
-    });
     const ctx = adNameContext(batch, ad, assets);
     return {
       id: ad.id,
@@ -344,7 +652,7 @@ export function buildPreview(batchId: number, dest: DestinationInfo, capPoints: 
       key: ad.key,
       creativeName: ad.creative_name,
       name: ad.name ?? "",
-      metaName: metaName(ad.name ?? ad.creative_name, ad.key, opts.namePrefix),
+      metaName: metaName(ad.name || ad.creative_name, ad.key, opts.namePrefix),
       adsetName: ad.adset_name ?? "",
       angle: ad.angle ?? "",
       files: assets.map((a) => ({
@@ -370,9 +678,18 @@ export function buildPreview(batchId: number, dest: DestinationInfo, capPoints: 
       effectiveStatus: ad.effective_status,
       reviewIssues: ad.review_issues ? (JSON.parse(ad.review_issues) as string[]) : [],
       featureWarnings: JSON.parse(ad.feature_warnings) as string[],
+      metaPostId: ad.meta_post_id ?? null,
+      metaIgMediaId: ad.meta_ig_media_id ?? null,
+      leftover:
+        ad.status !== "done" && batch.adset_mode === "new_per_ad" && ad.meta_adset_id && !ad.meta_ad_id
+          ? `An empty paused ad set (ID ${ad.meta_adset_id}, named with [L:${ad.key}]) is in Meta from this attempt. "Retry failed" puts the ad into it; nothing is made twice.`
+          : sharedLeft?.id === ad.id
+            ? `The batch's new ad set (ID ${batch.shared_adset_id}, named with [L:${batch.key}-00]) is in Meta, paused and empty, from this attempt. "Retry failed" puts the ads into it; nothing is made twice.`
+            : null,
     };
   });
-  const est = estimate(planAds, capPoints);
+  // The whole launch: this batch and the batches launched with it into other ad sets.
+  const est = estimateWork(launchWork(getBatch(batchId)!), typeof capPoints === "number" ? { capPoints } : capPoints);
   if (opts.persist && isDraft) updateBatch(batchId, { estimate_seconds: est.seconds, previewed_at: new Date().toISOString() });
   const all = [...batchChecks, ...ads.flatMap((a) => a.checks)];
   return {

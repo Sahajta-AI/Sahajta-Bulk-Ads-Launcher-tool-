@@ -3,7 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "../client-api";
+import { msgClass } from "../msg";
+import { AdsList } from "./ads";
+import { AudiencesPanel } from "./audiences";
 import { BULK_HEADERS, parseBulk } from "./bulk";
+import { DeliveryTable } from "./delivery";
 import { CopyAdSetForm, CopyCampaignForm, EditAdSetForm, EditCampaignForm, NewAdSetForm, NewCampaignForm, PostAdsForm, type FormProps } from "./forms";
 import s from "./manage.module.css";
 import { ist, metaPill, planPill, rupees, type Options, type PlanInput, type PlanListItem, type PlanView, type Tree, type TreeAdSet, type TreeCampaign } from "./util";
@@ -12,6 +16,7 @@ type Open =
   | { kind: "newCampaign" }
   | { kind: "postAds" }
   | { kind: "bulk" }
+  | { kind: "audiences" }
   | { kind: "newAdset"; campaignId?: string }
   | { kind: "editCampaign" | "copyCampaign"; id: string }
   | { kind: "editAdset" | "copyAdset"; id: string };
@@ -22,6 +27,7 @@ export default function ManageClient() {
   const [treeError, setTreeError] = useState("");
   const [options, setOptions] = useState<Options | null>(null);
   const [plans, setPlans] = useState<PlanListItem[] | null>(null);
+  const [plansError, setPlansError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState<Open | null>(null);
@@ -43,7 +49,7 @@ export default function ManageClient() {
   useEffect(() => {
     void loadTree();
     void api<Options>("/api/manage/options").then(setOptions).catch((e: Error) => setError(e.message));
-    void api<{ plans: PlanListItem[] }>("/api/plans").then((r) => setPlans(r.plans)).catch(() => setPlans([]));
+    void api<{ plans: PlanListItem[] }>("/api/plans").then((r) => { setPlans(r.plans); setPlansError(""); }).catch((e: Error) => setPlansError(e.message));
   }, [loadTree]);
 
   // Every action ends here: save and check the plan, then show its summary. Nothing runs yet.
@@ -77,25 +83,27 @@ export default function ManageClient() {
   return (
     <>
       <h1>Campaigns</h1>
-      <p className="lead">Turn campaigns and ad sets on or off, copy them, change budgets and make new ones. Every change first becomes a plan you check and confirm. Nothing is ever deleted.</p>
+      <p className="lead">Turn campaigns, ad sets and ads on or off, copy them, change budgets, edit ads and make new ones. Every change first becomes a plan you check and confirm. Nothing is ever deleted.</p>
 
       <div className={s.toolbar}>
         <button className="primary" disabled={!props} onClick={() => show({ kind: "newCampaign" })}>New campaign</button>
         <button disabled={!props || !tree?.campaigns.length} onClick={() => show({ kind: "newAdset" })}>New ad set</button>
         <button disabled={!props || !tree?.campaigns.length} onClick={() => show({ kind: "postAds" })}>Ads from an existing post</button>
         <button disabled={!props || !tree?.campaigns.length} onClick={() => show({ kind: "bulk" })}>Bulk changes</button>
+        <button disabled={!props} onClick={() => show({ kind: "audiences" })}>Audiences</button>
         <button disabled={refreshing} onClick={() => void loadTree(true)}>{refreshing ? "Reading Meta…" : "Refresh from Meta"}</button>
       </div>
 
-      {error && <div className="msg error" style={{ whiteSpace: "pre-line" }}>{error}</div>}
+      {error && <div className={msgClass(error)} style={{ whiteSpace: "pre-line" }}>{error}</div>}
 
       {props && open?.kind === "newCampaign" && <div className="panel"><NewCampaignForm {...props} /></div>}
       {props && open?.kind === "newAdset" && !open.campaignId && <div className="panel"><NewAdSetForm {...props} /></div>}
       {props && open?.kind === "postAds" && <div className="panel"><PostAdsForm {...props} /></div>}
       {props && open?.kind === "bulk" && <BulkPanel {...props} />}
+      {props && open?.kind === "audiences" && <AudiencesPanel {...props} />}
 
       {treeError && (
-        <div className="msg error">
+        <div className={msgClass(treeError)}>
           {treeError} {/connect/i.test(treeError) && <a href="/settings#meta">Open Meta settings</a>}
         </div>
       )}
@@ -130,7 +138,8 @@ export default function ManageClient() {
 
       <div className="panel" style={{ marginTop: 32 }}>
         <header><h2>Recent plans</h2></header>
-        {!plans && <p className="muted">Loading…</p>}
+        {plansError && <div className="msg error">Could not load the plans: {plansError}</div>}
+        {!plans && !plansError && <p className="muted">Loading…</p>}
         {plans?.length === 0 && <p className="muted">No plans yet.</p>}
         {plans?.slice(0, 15).map((p) => (
           <div key={p.key} className="list-item">
@@ -168,6 +177,7 @@ function CampaignCard({ c, currency, open, onToggle, busy, is, show, props, quic
   quick: (id: string, input: PlanInput) => Promise<void>;
 }) {
   const on = c.status === "ACTIVE";
+  const [delivery, setDelivery] = useState(false);
   return (
     <div className="panel">
       <div className={s.title}>
@@ -190,6 +200,7 @@ function CampaignCard({ c, currency, open, onToggle, busy, is, show, props, quic
         <button disabled={!props} onClick={() => show({ kind: "copyCampaign", id: c.id })}>Copy</button>
         <button disabled={!props} onClick={() => show({ kind: "editCampaign", id: c.id })}>Edit</button>
         <button disabled={!props} onClick={() => show({ kind: "newAdset", campaignId: c.id })}>New ad set</button>
+        <button onClick={() => setDelivery(!delivery)}>{delivery ? "Hide delivery" : "Delivery"}</button>
         <button className="link" onClick={onToggle} style={{ marginLeft: "auto" }}>
           {open ? "Hide ad sets" : `Show ${c.adsets.length} ad set${c.adsets.length === 1 ? "" : "s"}`}
         </button>
@@ -198,6 +209,7 @@ function CampaignCard({ c, currency, open, onToggle, busy, is, show, props, quic
       {props && is({ kind: "copyCampaign", id: c.id }) && <CopyCampaignForm {...props} campaign={c} />}
       {props && is({ kind: "editCampaign", id: c.id }) && <EditCampaignForm {...props} campaign={c} />}
       {props && is({ kind: "newAdset", campaignId: c.id }) && <NewAdSetForm {...props} campaignId={c.id} />}
+      {delivery && <DeliveryTable query={`campaign=${encodeURIComponent(c.id)}`} onClose={() => setDelivery(false)} />}
 
       {open && (
         <div className={s.adsets}>
@@ -223,6 +235,8 @@ function AdSetItem({ a, c, currency, busy, is, show, props, quick }: {
 }) {
   const on = a.status === "ACTIVE";
   const d = a.details;
+  const [showAds, setShowAds] = useState(false);
+  const [delivery, setDelivery] = useState(false);
   const budget = a.dailyBudget !== null ? `${rupees(a.dailyBudget, currency)} a day` : a.lifetimeBudget !== null ? `${rupees(a.lifetimeBudget, currency)} lifetime` : d.budget;
   return (
     <div className={s.adset}>
@@ -232,6 +246,7 @@ function AdSetItem({ a, c, currency, busy, is, show, props, quick }: {
       </div>
       <dl className={s.kvSmall}>
         <dt>Budget</dt><dd>{budget}</dd>
+        {d.spendLimits && (<><dt>Spend limits</dt><dd>{d.spendLimits}</dd></>)}
         <dt>Bid</dt><dd>{d.bid}</dd>
         <dt>Schedule</dt><dd>{d.schedule}</dd>
         <dt>Goal</dt><dd>{d.goal}</dd>
@@ -248,9 +263,13 @@ function AdSetItem({ a, c, currency, busy, is, show, props, quick }: {
         </button>
         <button disabled={!props} onClick={() => show({ kind: "copyAdset", id: a.id })}>Copy</button>
         <button disabled={!props} onClick={() => show({ kind: "editAdset", id: a.id })}>Edit</button>
+        <button onClick={() => setDelivery(!delivery)}>{delivery ? "Hide delivery" : "Delivery"}</button>
+        <button className="link" disabled={!props} onClick={() => setShowAds(!showAds)} style={{ marginLeft: "auto" }}>{showAds ? "Hide ads" : "Show ads"}</button>
       </div>
       {props && is({ kind: "copyAdset", id: a.id }) && <CopyAdSetForm {...props} adset={a} campaign={c} />}
       {props && is({ kind: "editAdset", id: a.id }) && <EditAdSetForm {...props} adset={a} campaign={c} />}
+      {delivery && <DeliveryTable query={`adset=${encodeURIComponent(a.id)}`} onClose={() => setDelivery(false)} />}
+      {props && showAds && <AdsList adset={a} tree={props.tree} submit={props.submit} busy={busy} quick={quick} />}
     </div>
   );
 }
@@ -292,6 +311,8 @@ function BulkPanel({ tree, options, submit, close }: FormProps) {
           Copy needs <code>source_adset</code> (and <code>campaign</code> to put the copy in another campaign). Edit needs <code>adset</code>.
           Create needs <code>name</code>, <code>campaign</code> and a <code>goal</code>. Times are India time, like 2026-11-20 09:00.
           Countries are codes with commas, like IN, AE. Genders: all, men or women. Status: on or off. Blank cells keep the original.
+          Optional: <code>languages</code> as language IDs with commas, <code>inventory_filter</code> as expanded, moderate or limited,
+          and <code>frequency_cap</code> like 2/7 (at most 2 times every 7 days; only for the goal Daily unique reach).
         </p>
         <button className="link" onClick={() => setText(SAMPLE)}>Fill in an example</button>
       </details>
@@ -323,7 +344,7 @@ function BulkPanel({ tree, options, submit, close }: FormProps) {
         </div>
       )}
       {bad > 0 && <div className="msg error">{bad} row{bad === 1 ? " has" : "s have"} problems. Fix them in the sheet and paste again.</div>}
-      {error && <div className="msg error" style={{ whiteSpace: "pre-line" }}>{error}</div>}
+      {error && <div className={msgClass(error)} style={{ whiteSpace: "pre-line" }}>{error}</div>}
       <div className={s.actions}>
         <button className="primary" disabled={!ready || busy} onClick={check}>{busy ? "Checking…" : `Check plan${parsed.rows.length ? ` (${parsed.rows.length} rows)` : ""}`}</button>
         <button disabled={busy} onClick={close}>Close</button>

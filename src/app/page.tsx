@@ -1,3 +1,4 @@
+import { recentAlerts } from "@/lib/alerts";
 import { requirePageUser } from "@/lib/page-auth";
 import { listBatches } from "@/lib/service";
 import { getAccount } from "@/lib/store";
@@ -8,6 +9,9 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   await requirePageUser();
   const recent = listBatches(5);
+  // Same list as GET /api/alerts: launches and plans that failed in the background (last 14 days).
+  const alerts = recentAlerts(5);
+  const when = (iso: string) => new Date(iso).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", dateStyle: "medium", timeStyle: "short" });
   return (
     <>
       <h1>Launch ads</h1>
@@ -16,6 +20,22 @@ export default async function Home() {
         <div className="msg warning" style={{ marginBottom: 20 }}>
           Meta isn&apos;t connected yet. <a href="/settings#meta">Connect Meta</a> first. It takes about a minute.
         </div>
+      )}
+      {alerts.length > 0 && (
+        <>
+          <p className="section-title">Needs your attention</p>
+          <div className="panel" style={{ padding: "4px 20px" }}>
+            {alerts.map((a) => (
+              <div className="list-item" key={a.at + a.subject}>
+                <span className="grow">
+                  {a.subject}
+                  <small style={{ display: "block" }}>{when(a.at)}</small>
+                </span>
+                <a href={a.link}>Open</a>
+              </div>
+            ))}
+          </div>
+        </>
       )}
       <NewBatch />
       {recent.length > 0 && (

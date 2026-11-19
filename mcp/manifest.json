@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "sahajta-ads",
   "display_name": "Sahajta Ads Launcher",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Preview and launch Meta ads from a Google Drive folder, and plan campaign and ad set changes, through the Sahajta Ads Launcher.",
   "long_description": "Ask Claude to launch a folder of creatives, create, copy or edit campaigns and ad sets in bulk, turn things on or off, and read results. Claude always shows a summary first (accounts, every budget and the total) and asks before anything runs; anything that can spend money needs the total daily budget confirmed. Nothing can be deleted. This extension only talks to the launcher's API with your personal key. It never holds the Meta token.",
   "author": {
@@ -24,6 +24,10 @@
     }
   },
   "tools": [
+    {
+      "name": "(all launcher tools)",
+      "description": "The extension passes Claude's requests to the launcher, so new tools appear after restarting Claude Desktop."
+    },
     {
       "name": "connection_status",
       "description": "The connected ad account, Page and Instagram account (photo, ID, link) and login expiry"

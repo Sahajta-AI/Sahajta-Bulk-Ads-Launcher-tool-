@@ -43,7 +43,7 @@ describe("never delete anything", () => {
     const s = await summarise(client, { ops: [{ type: "edit_adset", adset: "as1", status: "ARCHIVED" as never }] });
     expect(s.errors).toBeGreaterThan(0);
     expect(s.checks.map((c) => c.message).join(" ")).toMatch(/not possible/);
-    expect(mock.calls.filter((c) => c.path !== "act_1001" && !c.path.startsWith("as1") && !c.path.startsWith("c1"))).toHaveLength(0);
+    expect(mock.calls.filter((c) => c.method !== "GET")).toHaveLength(0);
   });
 });
 
@@ -129,6 +129,8 @@ describe("change plans", () => {
     db().prepare("UPDATE plans SET status = 'draft' WHERE id = ?").run(row.id);
     expect(() => confirmCheck(getPlan(row.key), { confirm: false })).toThrow(/confirm: true/);
     confirmCheck(getPlan(row.key), { confirm: true });
+    // confirmPlan queues the plan after this check; runPlan runs only a queued (or running) plan, never a draft.
+    db().prepare("UPDATE plans SET status = 'queued' WHERE id = ?").run(row.id);
     const res = await runPlan(row.id, { client, clock });
     expect(res).toEqual({ done: 2, failed: 0 });
     const camp = mock.of("campaign").find((c) => c.name === "Nov leads ABO")!;
@@ -164,12 +166,18 @@ describe("change plans", () => {
     const input: PlanInput = { ops: [{ type: "duplicate_adset", adset: "as4", campaign: "c2", copies: 3 }] };
     const s = await summarise(client, input);
     expect(s.errors).toBe(0);
+    // Meta's rule (plan pt64e): the minimums of a campaign's ad sets may add up to its budget, not more.
+    // ₹700 fits once in "CBO campaign" (₹1,000 a day); three copies would make ₹2,100: the check says so.
+    expect(s.checks.find((c) => c.level === "warning" && /minimum daily spends adding up to ₹2,100/.test(c.message))?.message).toMatch(/more than its ₹1,000 daily budget/);
     const row = plan(acc, input, s);
     await runPlan(row.id, { client, clock });
     const made = mock.of("adset").filter((a) => a.campaign_id === "c2" && a.id !== "as3");
     expect(made).toHaveLength(3);
-    expect(made.every((a) => a.daily_min_spend_target === undefined && a.daily_budget === undefined)).toBe(true);
-    expect(JSON.parse(getPlan(row.key).progress)[0].message).toMatch(/rebuilt without the template's spend limits/);
+    expect(made.every((a) => a.daily_budget === undefined)).toBe(true);
+    expect(made.map((a) => Number(a.daily_min_spend_target ?? 0)).sort()).toEqual([0, 0, 70000]);
+    const msg = JSON.parse(getPlan(row.key).progress)[0].message as string;
+    expect(msg).toMatch(/Copy 1: it has a minimum daily spend of ₹700\./);
+    expect(msg).toMatch(/Copies 2 and 3: Meta refused the copy as it is \(the minimum daily spends of the ad sets in "CBO campaign" would add up to more than its ₹1,000 a day\), so each was built from the original's settings without its spend limits; each has no spend limits\./);
   });
 
   it("duplicate a campaign with its contents, edit an ad set's budget and audience", async () => {
@@ -228,14 +236,17 @@ describe("change plans", () => {
     expect(s.spendConfirmation).toBe("₹1,000");
     const row = plan(acc, input, s);
     db().prepare("UPDATE plans SET status = 'draft' WHERE id = ?").run(row.id);
-    expect(() => confirmCheck(getPlan(row.key), { confirm: true })).toThrow(/typing the total daily budget/);
+    expect(() => confirmCheck(getPlan(row.key), { confirm: true })).toThrow(/typing what can spend in a day once the plan has run/);
     expect(() => confirmCheck(getPlan(row.key), { confirm: true, spendConfirmation: "₹10,000" })).toThrow(/₹1,000/);
     confirmCheck(getPlan(row.key), { confirm: true, spendConfirmation: "1000" });
     expect(sameAmount("INR 1,000.00", "₹1,000")).toBe(true);
+    // confirmPlan queues the plan after this check; runPlan runs only a queued (or running) plan, never a draft.
+    db().prepare("UPDATE plans SET status = 'queued' WHERE id = ?").run(row.id);
     const before = mock.calls.length;
     await runPlan(row.id, { client, clock });
     const writes = mock.calls.slice(before).filter((c) => c.method === "POST").map((c) => c.path);
-    expect(writes).toEqual(["ad1", "as3", "c2"]);
+    // as3 was already on (only its campaign was off), so only the ad and the campaign change.
+    expect(writes).toEqual(["ad1", "c2"]);
     expect(mock.objects.get("c2")!.status).toBe("ACTIVE");
     expect(mock.objects.get("ad1")!.status).toBe("ACTIVE");
   });

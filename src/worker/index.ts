@@ -1,133 +1,94 @@
-import fs from "node:fs";
-import path from "node:path";
-import { backupNow } from "@/lib/backup";
-import { removeBatchFiles, sweepFiles } from "@/lib/cleanup";
-import { config } from "@/lib/config";
-import { db } from "@/lib/db";
-import { checkReview, runBatch } from "@/lib/engine/launcher";
-import { LANES, claimNext, enqueue, finishJob, requeueStale, workerHeartbeat, type Job } from "@/lib/jobs";
-import { clientFor } from "@/lib/meta/factory";
-import { realClock } from "@/lib/meta/pacer";
-import { anyFiles } from "@/lib/sources/drive";
-import { getBatch, logEvent, updateBatch } from "@/lib/store";
-import { runPlan } from "@/lib/manage/plan";
-import { queueGoLive } from "@/lib/manage/golive";
+import { LANES, claimNext, releaseJobs, requeueStale, type Job } from "@/lib/jobs";
+import { useBackgroundClients } from "@/lib/meta/factory";
+import { alertStopped, log, nightly, runClaimed, safeHeartbeat } from "./run";
 
-// The worker: takes jobs from the jobs table in two lanes, each one job at a time.
+// The worker: takes jobs from the jobs table in three lanes, each one job at a time.
 //   launch lane: launch -> run a batch to the end (paced, resumable)
+//   plan lane:   plan -> run a confirmed plan
 //   other lane:  review -> read Meta's review status for a batch's ads, again later while any are pending
 //                backup -> copy the database to Object Storage
-// Both lanes call Meta through the same pacer per ad account, so together they stay under the limit.
+// All lanes call Meta through the same pacer per ad account, so together they stay under the limit.
+// What each job does is in ./run.ts.
 
-const REVIEW_SCHEDULE_MIN = [2, 10, 30, 60, 180, 360, 720, 1440];
+// Nobody waits on a page here: launches and plans wait as long as Meta's rate limits ask.
+useBackgroundClients();
 
-function log(msg: string) {
-  console.log(`${new Date().toISOString()} ${msg}`);
-}
-
-async function runJob(job: Job) {
-  if (job.kind === "launch") {
-    const batch = getBatch(job.batch_id!)!;
-    const client = clientFor(batch.ad_account_id, (ms, reason) => {
-      // Short pauses happen on almost every call on Meta's slow tier: only log the long ones.
-      if (ms >= 60_000) logEvent(batch.id, null, "info", `${reason}: waiting ${Math.ceil(ms / 1000)} seconds.`);
-    });
-    const tmpDir = path.join(config.dataDir, "tmp");
-    fs.mkdirSync(tmpDir, { recursive: true });
-    const res = await runBatch(batch.id, { client, files: anyFiles, clock: realClock, accountDbId: batch.ad_account_id, tmpDir, namePrefix: config.namePrefix });
-    log(`batch ${batch.key}: ${res.done} done, ${res.failed} failed`);
-    // Meta has every file now: free the server's disk. Kept while some ads still need a retry.
-    if (res.failed === 0) {
-      const freed = removeBatchFiles(batch.id);
-      if (freed) log(`batch ${batch.key}: removed ${Math.round(freed / 1024 ** 2)} MB of creatives from the server`);
-    }
-    // "Launch now" or "at a time": turn the new ads on once every ad is in.
-    const golive = await queueGoLive(batch.id);
-    if (golive) log(`batch ${batch.key}: ${golive}`);
-    enqueue("review", batch.id, Date.now() + REVIEW_SCHEDULE_MIN[0] * 60_000);
-    enqueue("backup", null);
-    return;
-  }
-  if (job.kind === "plan") {
-    const plan = db().prepare("SELECT id, key, ad_account_id, status FROM plans WHERE id = ?").get(job.batch_id) as { id: number; key: string; ad_account_id: number; status: string } | undefined;
-    if (!plan || plan.status === "cancelled") return;
-    const res = await runPlan(plan.id, { client: clientFor(plan.ad_account_id), clock: realClock });
-    log(`plan ${plan.key}: ${res.done} step(s) done, ${res.failed} failed`);
-    enqueue("backup", null);
-    return;
-  }
-  if (job.kind === "review") {
-    const batch = getBatch(job.batch_id!)!;
-    const { pending } = await checkReview(clientFor(batch.ad_account_id), batch.id);
-    // Earlier review checks for this batch, plus this one.
-    const n = (db().prepare("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'review' AND batch_id = ? AND status = 'done'").get(batch.id) as { n: number }).n + 1;
-    if (pending > 0 && n < REVIEW_SCHEDULE_MIN.length) enqueue("review", batch.id, Date.now() + REVIEW_SCHEDULE_MIN[n] * 60_000);
-    return;
-  }
-  if (job.kind === "backup") {
-    const r = await backupNow("after a batch");
-    log(r.message);
-  }
-}
+/** On SIGTERM (deploy, restart) the running job gets this long to finish its current Meta call. */
+const STOP_AFTER_MS = 8_000;
 
 let stopping = false;
+/** Jobs running now, per lane: put back in the queue on a graceful stop. */
+const running = new Set<number>();
 
-async function lane(kinds: readonly Job["kind"][], everyLoop?: () => void) {
+async function lane(kinds: readonly Job["kind"][]) {
   while (!stopping) {
-    everyLoop?.();
-    const job = claimNext(kinds);
+    let job: Job | undefined;
+    try {
+      job = claimNext(kinds);
+    } catch (e) {
+      log(`couldn't read the job queue: ${e instanceof Error ? e.message : String(e)}`);
+    }
     if (!job) {
       await new Promise((r) => setTimeout(r, 2000));
       continue;
     }
+    running.add(job.id);
     try {
-      await runJob(job);
-      finishJob(job.id, "done");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      log(`job ${job.id} (${job.kind}) failed: ${msg}`);
-      finishJob(job.id, "failed", msg);
-      if (job.kind === "launch" && job.batch_id) {
-        // Ads not created yet are marked failed with the reason, so "Retry" can pick them up.
-        const plain = `The launch stopped before this ad was created: ${msg}. Press "Retry" to continue; ads already created are not made again.`;
-        db().prepare("UPDATE ads SET status = 'failed', error = ?, wait_until = NULL WHERE batch_id = ? AND status != 'done'").run(plain, job.batch_id);
-        const done = (db().prepare("SELECT COUNT(*) AS n FROM ads WHERE batch_id = ? AND status = 'done'").get(job.batch_id) as { n: number }).n;
-        updateBatch(job.batch_id, { status: done ? "partial" : "failed", finished_at: new Date().toISOString() });
-        logEvent(job.batch_id, null, "error", `The launch stopped: ${msg}`);
-      }
-      if (job.kind === "plan" && job.batch_id) {
-        db().prepare("UPDATE plans SET status = CASE WHEN status = 'cancelled' THEN status ELSE 'failed' END, finished_at = datetime('now') WHERE id = ?").run(job.batch_id);
-      }
+      await runClaimed(job);
+    } finally {
+      running.delete(job.id);
     }
   }
 }
 
+function stop(sig: string) {
+  if (stopping) return;
+  stopping = true;
+  log(`${sig}: no new jobs. The running job gets ${STOP_AFTER_MS / 1000} seconds, then goes back in the queue and continues on the next start.`);
+  setTimeout(() => {
+    try {
+      // Not counted as an attempt: a deploy in the middle of a long launch is normal.
+      const n = releaseJobs([...running]);
+      if (n) log(`Put ${n} running job(s) back in the queue.`);
+    } catch (e) {
+      log(`couldn't put the running jobs back (they resume on the next start anyway): ${e instanceof Error ? e.message : String(e)}`);
+    }
+    process.exit(0);
+  }, STOP_AFTER_MS);
+}
+
 async function main() {
-  const stale = requeueStale();
-  if (stale) log(`Resuming ${stale} job(s) that were running when the worker stopped.`);
-  log("Worker started.");
-  for (const sig of ["SIGTERM", "SIGINT"] as const) {
-    process.on(sig, () => {
-      log(`${sig}: stopping after the current step. Unfinished batches resume on the next start.`);
-      stopping = true;
-      setTimeout(() => process.exit(0), 2000);
-    });
+  // First of all: a stop (deploy, restart) that comes while the worker is starting is handled too.
+  // The signal reaches this process through `npx tsx` (npm and tsx both pass SIGTERM and SIGINT on).
+  for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => stop(sig));
+  const { requeued, stopped } = requeueStale();
+  if (requeued) log(`Resuming ${requeued} job(s) that were running when the worker stopped.`);
+  for (const s of stopped) {
+    log(`job ${s.job.id} (${s.job.kind}) stopped: ${s.message}`);
+    if (s.stopped) await alertStopped(s.stopped, s.message).catch(() => undefined);
   }
-  workerHeartbeat();
-  setInterval(workerHeartbeat, 15_000);
-  // Nightly backup at about 02:00 IST.
-  let lastNightly = "";
-  const nightly = () => {
-    const ist = new Date(Date.now() + 330 * 60_000);
-    const day = ist.toISOString().slice(0, 10);
-    if (ist.getUTCHours() === 2 && lastNightly !== day) {
-      lastNightly = day;
-      enqueue("backup", null);
-      const swept = sweepFiles();
-      if (swept.freedGb) log(`nightly cleanup: ${swept.freedGb} GB freed`);
+  log("Worker started.");
+
+  safeHeartbeat();
+  setInterval(safeHeartbeat, 15_000);
+
+  // Nightly cleanup and backup: once per India-time day, on the first check after 02:00 IST.
+  let nightlyBusy = false;
+  const tick = async () => {
+    if (nightlyBusy || stopping) return;
+    nightlyBusy = true;
+    try {
+      if (await nightly()) log("Nightly cleanup and backup started.");
+    } finally {
+      nightlyBusy = false;
     }
   };
-  await Promise.all([lane(LANES.launch), lane(LANES.other, nightly), lane(LANES.plan)]);
+  void tick();
+  setInterval(() => void tick(), 60_000);
+
+  await Promise.all([lane(LANES.launch), lane(LANES.other), lane(LANES.plan)]);
+  log("Worker stopped.");
+  process.exit(0);
 }
 
 main().catch((e) => {

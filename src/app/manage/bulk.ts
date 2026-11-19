@@ -9,6 +9,7 @@ import { countryList, num, type Option, type Tree } from "./util";
 export const BULK_HEADERS = [
   "action", "name", "campaign", "source_adset", "adset", "daily_budget", "lifetime_budget", "bid_strategy", "bid_amount",
   "start_time", "end_time", "countries", "age_min", "age_max", "genders", "status", "goal", "destination", "pixel_id", "event",
+  "languages", "inventory_filter", "frequency_cap",
 ];
 
 export interface BulkRow {
@@ -163,6 +164,22 @@ export function parseBulk(text: string, tree: Tree, bidStrategies: Option[], goa
     if (get("destination")) { const v = attempt(() => pickOption(get("destination"), destinations, "destination")); if (v) { spec.destination = v; said.push(`destination ${get("destination")}`); } }
     if (get("pixel_id")) { spec.pixel_id = get("pixel_id"); said.push(`pixel ${spec.pixel_id}`); }
     if (get("event")) { spec.event = get("event").toUpperCase().replace(/\s+/g, "_"); said.push(`event ${spec.event}`); }
+    if (get("languages")) {
+      const ids = get("languages").split(/[,\s]+/).filter(Boolean);
+      const nums = ids.map(Number);
+      if (nums.some((n) => !Number.isInteger(n) || n <= 0)) errors.push(`languages "${get("languages")}" must be language IDs (numbers) with commas`);
+      else { spec.languages = nums; said.push(`languages ${nums.join(", ")}`); }
+    }
+    if (get("inventory_filter")) {
+      const v = get("inventory_filter").toLowerCase();
+      if (v === "expanded" || v === "moderate" || v === "limited") { spec.inventory_filter = v; said.push(`inventory filter ${v}`); }
+      else errors.push(`inventory_filter "${get("inventory_filter")}" must be expanded, moderate or limited`);
+    }
+    if (get("frequency_cap")) {
+      const m = get("frequency_cap").match(/^(\d+)\s*\/\s*(\d+)$/);
+      if (!m || !Number(m[1]) || !Number(m[2])) errors.push(`frequency_cap "${get("frequency_cap")}" must look like 2/7 (2 times every 7 days)`);
+      else { spec.frequency_cap = { impressions: Number(m[1]), days: Number(m[2]) }; said.push(`frequency cap ${m[1]} every ${m[2]} days`); }
+    }
     row.changes = said.join("; ");
 
     if (action === "create") {

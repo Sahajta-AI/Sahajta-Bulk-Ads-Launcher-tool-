@@ -38,7 +38,10 @@ export interface PlanListItem {
   statusLabel: string;
   canSpend: boolean;
   runAt: string | null;
+  /** The same time in India time words, from the server ("20 Nov 2026, 09:00 am IST"). */
+  runAtLabel?: string | null;
   createdAt: string;
+  createdAtLabel?: string;
   createdBy: string | null;
   source: string;
   dailyBudget: number;

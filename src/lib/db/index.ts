@@ -18,13 +18,22 @@ export function openDb(file: string): DB {
   return d;
 }
 
+/**
+ * Brings the database to the newest schema. The web app and the worker start at the same moment
+ * after a deploy, so each step runs in an IMMEDIATE transaction (one process at a time) and reads
+ * user_version again inside it: the process that comes second sees the step done and skips it.
+ */
 export function migrate(d: DB) {
-  const current = d.pragma("user_version", { simple: true }) as number;
-  for (let v = current; v < migrations.length; v++) {
-    d.transaction(() => {
-      d.exec(migrations[v]);
-      d.pragma(`user_version = ${v + 1}`);
-    })();
+  if ((d.pragma("user_version", { simple: true }) as number) >= migrations.length) return;
+  const step = d.transaction((): boolean => {
+    const v = d.pragma("user_version", { simple: true }) as number;
+    if (v >= migrations.length) return false;
+    d.exec(migrations[v]);
+    d.pragma(`user_version = ${v + 1}`);
+    return true;
+  });
+  while (step.immediate()) {
+    /* next migration */
   }
 }
 

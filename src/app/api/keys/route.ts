@@ -3,12 +3,16 @@ import { body, route } from "@/lib/http";
 import { HttpError } from "@/lib/httperror";
 import { sha256 } from "@/lib/crypto";
 import { db } from "@/lib/db";
+import { cacheGet } from "@/lib/store";
+import { EXTENSION_VERSION } from "../../../../mcp/version";
 
 export const dynamic = "force-dynamic";
 
-export const GET = route(async (_req, _ctx, who) =>
-  db().prepare("SELECT id, label, key_hint AS hint, created_at AS createdAt, last_used_at AS lastUsedAt FROM api_keys WHERE user_email = ? AND revoked_at IS NULL ORDER BY id DESC").all(who.email),
-);
+/** Keys, with the Claude Desktop extension version last seen with each (null = not seen / Claude Code). */
+export const GET = route(async (_req, _ctx, who) => {
+  const rows = db().prepare("SELECT id, label, key_hint AS hint, key_hash AS hash, created_at AS createdAt, last_used_at AS lastUsedAt FROM api_keys WHERE user_email = ? AND revoked_at IS NULL ORDER BY id DESC").all(who.email) as { id: number; label: string; hint: string; hash: string; createdAt: string; lastUsedAt: string | null }[];
+  return rows.map(({ hash, ...k }) => ({ ...k, extension: cacheGet<{ version: string; at: string }>(`ext_version:${hash.slice(0, 16)}`) ?? null, latestExtension: EXTENSION_VERSION }));
+});
 
 /** Create a key for Claude. The key is shown once; only its hash is stored. */
 export const POST = route(async (req, _ctx, who) => {

@@ -7,6 +7,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Op } from "@/lib/manage/plan";
 import type { AdSetSpec, CampaignSpec } from "@/lib/manage/objects";
 import { api } from "../client-api";
+import { msgClass } from "../msg";
 import s from "./manage.module.css";
 import { itemId, ListMulti, ListSelect, SearchMulti, type LookupItem } from "./pickers";
 import { countryList, isoToIstInput, istInputToIso, num, rupees, type Options, type PlanInput, type Tree, type TreeAdSet, type TreeCampaign } from "./util";
@@ -24,20 +25,79 @@ const NO_MINOR = new Set(["JPY", "KRW", "VND", "CLP", "COP", "CRC", "HUF", "ISK"
 const fromMinor = (v: unknown, currency: string) => (v === undefined || v === null || v === "" ? undefined : Number(v) / (NO_MINOR.has(currency.toUpperCase()) ? 1 : 100));
 
 /** A money or number field: blank → undefined; anything else must be a number ≥ 0. */
-function amount(v: string, what: string): number | undefined {
+export function amount(v: string, what: string): number | undefined {
   const n = num(v);
   if (n === undefined) return undefined;
   if (!Number.isFinite(n) || n < 0) throw new Error(`${what}: type a number, like 1500.`);
   return n;
 }
 
-function whole(v: string, what: string): number | undefined {
+export function whole(v: string, what: string): number | undefined {
   const n = amount(v, what);
   if (n !== undefined && !Number.isInteger(n)) throw new Error(`${what}: type a whole number.`);
   return n;
 }
 
-function FormBox({ title, children, onSubmit, close, hint }: { title: string; children: ReactNode; onSubmit: () => Promise<void>; close: () => void; hint?: string }) {
+// Meta numbers the days 0 = Sunday … 6 = Saturday. Shown Monday first.
+const WEEK = [
+  { v: 1, l: "Mon" }, { v: 2, l: "Tue" }, { v: 3, l: "Wed" }, { v: 4, l: "Thu" }, { v: 5, l: "Fri" }, { v: 6, l: "Sat" }, { v: 0, l: "Sun" },
+];
+
+const INVENTORY = [
+  { value: "expanded", label: "Expanded: more places, some sensitive content" },
+  { value: "moderate", label: "Moderate: Meta's usual setting" },
+  { value: "limited", label: "Limited: only the safest places" },
+];
+type Inventory = NonNullable<AdSetSpec["inventory_filter"]>;
+
+/** Days ticked plus "09:00" to "18:00" → Meta's ad set schedule (whole hours; 00:00 as the end means midnight). */
+function scheduleSpec(days: number[], start: string, end: string): NonNullable<AdSetSpec["schedule"]> {
+  if (!days.length) throw new Error("Tick at least one day for the set hours.");
+  const e = end === "00:00" ? "24:00" : end;
+  const ok = /^([01]\d|2[0-4]):00$/;
+  if (!ok.test(start) || !ok.test(e)) throw new Error("Set hours must be whole hours, like 09:00 to 18:00.");
+  if (Number(e.slice(0, 2)) <= Number(start.slice(0, 2))) throw new Error("For set hours, the end time must be after the start time.");
+  return [{ days: [...days].sort((a, b) => a - b), start, end: e }];
+}
+
+/** "2" impressions every "7" days → frequency cap. */
+function freqSpec(impressions: string, days: string): NonNullable<AdSetSpec["frequency_cap"]> {
+  const i = whole(impressions, "Frequency cap: times");
+  const d = whole(days, "Frequency cap: days");
+  if (!i || !d) throw new Error("Frequency cap: type how many times and in how many days, like 2 times every 7 days.");
+  return { impressions: i, days: d };
+}
+
+function HoursFields({ days, setDays, start, setStart, end, setEnd }: { days: number[]; setDays: (d: number[]) => void; start: string; setStart: (v: string) => void; end: string; setEnd: (v: string) => void }) {
+  return (
+    <div className={s.subBox}>
+      <div className={s.checkGrid} style={{ marginBottom: 10 }}>
+        {WEEK.map((d) => (
+          <label key={d.v} className="check">
+            <input type="checkbox" checked={days.includes(d.v)} onChange={(e) => setDays(e.target.checked ? [...days, d.v] : days.filter((x) => x !== d.v))} />
+            {d.l}
+          </label>
+        ))}
+      </div>
+      <div className="row">
+        <label><span>From</span><input type="time" step={3600} value={start} onChange={(e) => setStart(e.target.value)} /></label>
+        <label><span>Until</span><input type="time" step={3600} value={end} onChange={(e) => setEnd(e.target.value)} /></label>
+      </div>
+      <p className="hint" style={{ marginTop: 0 }}>Whole hours, in the ad account’s time zone. “Until 00:00” means until midnight.</p>
+    </div>
+  );
+}
+
+function FreqFields({ times, setTimes, days, setDays, keep }: { times: string; setTimes: (v: string) => void; days: string; setDays: (v: string) => void; keep?: boolean }) {
+  return (
+    <div className="row">
+      <label><span>Frequency cap: show each person at most (times)</span><input value={times} onChange={(e) => setTimes(e.target.value)} inputMode="numeric" placeholder={keep ? "Keep as it is" : "No cap"} /></label>
+      <label><span>Every (days)</span><input value={days} onChange={(e) => setDays(e.target.value)} inputMode="numeric" placeholder="7" /></label>
+    </div>
+  );
+}
+
+export function FormBox({ title, children, onSubmit, close, hint }: { title: string; children: ReactNode; onSubmit: () => Promise<void>; close: () => void; hint?: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function go() {
@@ -54,7 +114,7 @@ function FormBox({ title, children, onSubmit, close, hint }: { title: string; ch
     <div className={s.form}>
       <h3>{title}</h3>
       {children}
-      {error && <div className="msg error" style={{ whiteSpace: "pre-line" }}>{error}</div>}
+      {error && <div className={msgClass(error)} style={{ whiteSpace: "pre-line" }}>{error}</div>}
       <div className={s.actions}>
         <button className="primary" disabled={busy} onClick={go}>{busy ? "Checking…" : "Check plan"}</button>
         <button disabled={busy} onClick={close}>Close</button>
@@ -64,7 +124,7 @@ function FormBox({ title, children, onSubmit, close, hint }: { title: string; ch
   );
 }
 
-function Select({ value, onChange, list, blank }: { value: string; onChange: (v: string) => void; list: { value: string; label: string }[]; blank?: string }) {
+export function Select({ value, onChange, list, blank }: { value: string; onChange: (v: string) => void; list: { value: string; label: string }[]; blank?: string }) {
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)}>
       {blank !== undefined && <option value="">{blank}</option>}
@@ -114,6 +174,10 @@ export function NewCampaignForm({ options, submit, close }: FormProps) {
   const [daily, setDaily] = useState("");
   const [bid, setBid] = useState("LOWEST_COST_WITHOUT_CAP");
   const [cat, setCat] = useState("NONE");
+  const [catCountries, setCatCountries] = useState("IN");
+  const [boosts, setBoosts] = useState<{ start: string; end: string; pct: string }[]>([]);
+  const special = !!cat && cat !== "NONE";
+  const setBoost = (i: number, k: "start" | "end" | "pct", val: string) => setBoosts(boosts.map((b, j) => (j === i ? { ...b, [k]: val } : b)));
 
   return (
     <FormBox
@@ -122,12 +186,29 @@ export function NewCampaignForm({ options, submit, close }: FormProps) {
       hint="The campaign is made switched off. Add ad sets to it after this plan runs."
       onSubmit={async () => {
         if (!name.trim()) throw new Error("Give the campaign a name.");
-        const spec: CampaignSpec = { name: name.trim(), objective, budget_level: level, special_ad_categories: cat && cat !== "NONE" ? [cat] : [] };
+        const spec: CampaignSpec = { name: name.trim(), objective, budget_level: level, special_ad_categories: special ? [cat] : [] };
+        if (special) {
+          const cc = countryList(catCountries);
+          if (!cc.length) throw new Error("Type the countries for the special ad category, like IN.");
+          spec.special_ad_category_country = cc;
+        }
         if (level === "campaign") {
           const d = amount(daily, "Daily budget");
           if (!d) throw new Error("Type the campaign's daily budget.");
           spec.daily_budget = d;
           spec.bid_strategy = bid || undefined;
+          const filled = boosts.filter((b) => b.start || b.end || b.pct.trim());
+          if (filled.length) {
+            spec.budget_schedules = filled.map((b, i) => {
+              const start = istInputToIso(b.start);
+              const end = istInputToIso(b.end);
+              if (!start || !end) throw new Error(`Budget raise ${i + 1}: set when it starts and when it ends.`);
+              if (Date.parse(end) <= Date.parse(start)) throw new Error(`Budget raise ${i + 1}: the end must be after the start.`);
+              const pct = whole(b.pct, `Budget raise ${i + 1}`);
+              if (!pct) throw new Error(`Budget raise ${i + 1}: type by how many percent to raise the budget, like 20.`);
+              return { start, end, increase_percent: pct };
+            });
+          }
         }
         await submit({ title: `New campaign "${spec.name}"`, ops: [{ type: "create_campaign", ...spec }] });
       }}
@@ -151,8 +232,24 @@ export function NewCampaignForm({ options, submit, close }: FormProps) {
           <label><span>Bid strategy</span><Select value={bid} onChange={setBid} list={options.bidStrategies.filter((b) => b.value === "LOWEST_COST_WITHOUT_CAP" || b.value === "COST_CAP" || b.value === "LOWEST_COST_WITH_BID_CAP" || b.value === ROAS)} /></label>
         </div>
       )}
+      {level === "campaign" && (
+        <>
+          <div className={s.section}>Raise the budget at set times (optional, India time)</div>
+          {boosts.map((b, i) => (
+            <div className="row" key={i} style={{ marginBottom: 10 }}>
+              <label><span>From</span><input type="datetime-local" value={b.start} onChange={(e) => setBoost(i, "start", e.target.value)} /></label>
+              <label><span>Until</span><input type="datetime-local" value={b.end} onChange={(e) => setBoost(i, "end", e.target.value)} /></label>
+              <label style={{ maxWidth: 150, minWidth: 120 }}><span>Raise by (%)</span><input value={b.pct} onChange={(e) => setBoost(i, "pct", e.target.value)} inputMode="numeric" placeholder="20" /></label>
+              <button type="button" onClick={() => setBoosts(boosts.filter((_, j) => j !== i))}>Remove</button>
+            </div>
+          ))}
+          <button type="button" className="link" onClick={() => setBoosts([...boosts, { start: "", end: "", pct: "" }])}>+ Add a time</button>
+          <p className="hint" style={{ marginBottom: 12 }}>For sale days or festivals: during these times Meta can spend more than the daily budget.</p>
+        </>
+      )}
       <div className="row">
         <label><span>Special ad category</span><Select value={cat} onChange={setCat} list={options.specialAdCategories} /></label>
+        {special && <label><span>Countries where the ads run (codes, comma between)</span><input value={catCountries} onChange={(e) => setCatCountries(e.target.value)} placeholder="IN" /></label>}
       </div>
     </FormBox>
   );
@@ -322,6 +419,16 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
   const [placeKind, setPlaceKind] = useState<"advantage" | "manual">("advantage");
   const [platforms, setPlatforms] = useState<string[]>(["facebook", "instagram"]);
   const [attribution, setAttribution] = useState("");
+  const [languages, setLanguages] = useState<LookupItem[]>([]);
+  const [useHours, setUseHours] = useState(false);
+  const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [hStart, setHStart] = useState("09:00");
+  const [hEnd, setHEnd] = useState("18:00");
+  const [freqTimes, setFreqTimes] = useState("");
+  const [freqDays, setFreqDays] = useState("7");
+  const [inventory, setInventory] = useState("");
+  const [expansion, setExpansion] = useState(false);
+  const [dynamic, setDynamic] = useState(false);
 
   const c = tree.campaigns.find((x) => x.id === campaign);
   const conversions = goal === "OFFSITE_CONVERSIONS" || goal === "VALUE";
@@ -345,6 +452,13 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
         spec.start_time = istInputToIso(start);
         spec.end_time = istInputToIso(end);
         if (spec.lifetime_budget !== undefined && !spec.end_time) throw new Error("A lifetime budget needs an end time.");
+        if (useHours && !c.cbo) {
+          if (spec.lifetime_budget === undefined) throw new Error("Running only at set hours needs a lifetime budget (Meta's rule). Pick “Lifetime budget” above and set an end time.");
+          spec.schedule = scheduleSpec(days, hStart, hEnd);
+        }
+        if (goal === "REACH" && freqTimes.trim()) spec.frequency_cap = freqSpec(freqTimes, freqDays);
+        if (inventory) spec.inventory_filter = inventory as Inventory;
+        if (dynamic) spec.dynamic_creative = true;
         if (conversions) {
           if (convKind === "pixel") {
             if (!pixel) throw new Error("Pick the pixel.");
@@ -379,6 +493,8 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
           if (interests.length) spec.interests = interests.map((i) => ({ id: itemId(i), name: i.name }));
           if (include.length) spec.custom_audiences = include.map((i) => ({ id: itemId(i), name: i.name }));
           if (exclude.length) spec.excluded_custom_audiences = exclude.map((i) => ({ id: itemId(i), name: i.name }));
+          if (languages.length) spec.languages = languages.map((l) => Number(itemId(l))).filter((n) => Number.isFinite(n));
+          if (expansion) spec.targeting_expansion = true;
         }
         spec.advantage_audience = advantage;
         if (placeKind === "advantage") spec.placements = "advantage";
@@ -419,6 +535,22 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
         <label><span>Start (blank = when turned on)</span><input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} /></label>
         <label><span>End {budgetKind === "lifetime" && !c?.cbo ? "(needed)" : "(optional)"}</span><input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} /></label>
       </div>
+      {!c?.cbo && (
+        <>
+          <label className="check" style={{ marginBottom: 10 }}>
+            <input
+              type="checkbox"
+              checked={useHours}
+              onChange={(e) => {
+                setUseHours(e.target.checked);
+                if (e.target.checked) setBudgetKind("lifetime");
+              }}
+            />
+            Run only at set hours (needs a lifetime budget and an end time)
+          </label>
+          {useHours && <HoursFields days={days} setDays={setDays} start={hStart} setStart={setHStart} end={hEnd} setEnd={setHEnd} />}
+        </>
+      )}
 
       <div className={s.section}>Goal</div>
       <div className="row">
@@ -450,6 +582,7 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
         </div>
       )}
       <BidFields options={options} strategy={bid} setStrategy={setBid} amt={bidAmt} setAmt={setBidAmt} />
+      {goal === "REACH" && <FreqFields times={freqTimes} setTimes={setFreqTimes} days={freqDays} setDays={setFreqDays} />}
 
       <div className={s.section}>Audience</div>
       <div className={s.radios} style={{ marginBottom: 10 }}>
@@ -481,12 +614,21 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
             <label className="field"><span>Custom audiences to include</span><ListMulti what="custom_audiences" picked={include} onChange={setInclude} /></label>
             <label className="field"><span>Custom audiences to leave out</span><ListMulti what="custom_audiences" picked={exclude} onChange={setExclude} /></label>
           </div>
+          <div className="row">
+            <label className="field"><span>Languages (search; blank = all languages)</span><SearchMulti what="languages" picked={languages} onChange={setLanguages} placeholder="Type a language, e.g. Hindi" /></label>
+          </div>
         </>
       )}
       <label className="check" style={{ marginBottom: 12 }}>
         <input type="checkbox" checked={advantage} onChange={(e) => setAdvantage(e.target.checked)} />
         Advantage+ audience (let Meta reach people beyond these choices)
       </label>
+      {audKind === "build" && (
+        <label className="check" style={{ marginBottom: 12 }}>
+          <input type="checkbox" checked={expansion} onChange={(e) => setExpansion(e.target.checked)} />
+          Let Meta reach beyond the detailed targeting (interests) when it expects better results
+        </label>
+      )}
 
       <div className={s.section}>Placements</div>
       <div className={s.radios} style={{ marginBottom: 10 }}>
@@ -504,8 +646,13 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
         </div>
       )}
       <div className="row">
+        <label><span>Brand safety: where ads may show</span><Select value={inventory} onChange={setInventory} list={INVENTORY} blank="Meta's default (moderate)" /></label>
         <label><span>Attribution</span><Select value={attribution} onChange={setAttribution} list={options.attribution} blank="Meta's default" /></label>
       </div>
+      <label className="check" style={{ marginBottom: 4 }}>
+        <input type="checkbox" checked={dynamic} onChange={(e) => setDynamic(e.target.checked)} />
+        Dynamic creative ad set (Meta mixes the files and texts of its one ad). This can’t be changed later.
+      </label>
     </FormBox>
   );
 }
@@ -516,19 +663,33 @@ interface RawAdSet {
   bid_constraints?: { roas_average_floor?: number };
   start_time?: string;
   end_time?: string;
-  targeting?: { age_min?: number; age_max?: number; genders?: number[]; geo_locations?: { countries?: string[] }; targeting_automation?: { advantage_audience?: number } };
+  optimization_goal?: string;
+  targeting?: { age_min?: number; age_max?: number; genders?: number[]; geo_locations?: { countries?: string[] }; targeting_automation?: { advantage_audience?: number }; locales?: number[]; targeting_optimization?: string };
 }
 
 export function EditAdSetForm({ options, submit, close, adset: a, campaign: c }: FormProps & { adset: TreeAdSet; campaign: TreeCampaign }) {
   const [init, setInit] = useState<Record<string, string> | null>(null);
   const [v, setV] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState("");
+  const [goal, setGoal] = useState("");
+  const [localeCount, setLocaleCount] = useState(0);
+  const [languages, setLanguages] = useState<LookupItem[]>([]);
+  const [allLanguages, setAllLanguages] = useState(false);
+  const [useHours, setUseHours] = useState(false);
+  const [days, setDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [hStart, setHStart] = useState("09:00");
+  const [hEnd, setHEnd] = useState("18:00");
+  const [freqTimes, setFreqTimes] = useState("");
+  const [freqDays, setFreqDays] = useState("7");
+  const [inventory, setInventory] = useState("");
   const set = (k: string) => (x: string) => setV((o) => ({ ...o, [k]: x }));
 
   useEffect(() => {
     api<{ raw: RawAdSet; currency: string }>(`/api/manage/object/adset/${a.id}`)
       .then(({ raw, currency }) => {
         const t = raw.targeting ?? {};
+        setGoal(raw.optimization_goal ?? "");
+        setLocaleCount(t.locales?.length ?? 0);
         const g = t.genders?.length === 1 ? String(t.genders[0]) : "all";
         const first: Record<string, string> = {
           name: a.name,
@@ -543,6 +704,7 @@ export function EditAdSetForm({ options, submit, close, adset: a, campaign: c }:
           gender: g,
           countries: (t.geo_locations?.countries ?? []).join(", "),
           advantage: t.targeting_automation?.advantage_audience === 1 ? "on" : "off",
+          expansion: t.targeting_optimization === "expansion_all" ? "on" : "off",
         };
         setInit(first);
         setV(first);
@@ -553,7 +715,7 @@ export function EditAdSetForm({ options, submit, close, adset: a, campaign: c }:
   if (loadError) {
     return (
       <div className={s.form}>
-        <div className="msg error">Could not read this ad set: {loadError}</div>
+        <div className={msgClass(loadError)}>Could not read this ad set: {loadError}</div>
         <button onClick={close}>Close</button>
       </div>
     );
@@ -562,6 +724,8 @@ export function EditAdSetForm({ options, submit, close, adset: a, campaign: c }:
 
   const changed = (k: string) => (v[k] ?? "") !== (init[k] ?? "");
   const genders = { all: "all", "1": "men", "2": "women" } as const;
+  // Set hours work only with an ad set lifetime budget (Meta's rule).
+  const hasLifetime = !c.cbo && init.lifetime !== "";
 
   return (
     <FormBox
@@ -592,6 +756,12 @@ export function EditAdSetForm({ options, submit, close, adset: a, campaign: c }:
           spec.countries = cs;
         }
         if (changed("advantage")) spec.advantage_audience = v.advantage === "on";
+        if (changed("expansion")) spec.targeting_expansion = v.expansion === "on";
+        if (allLanguages) spec.languages = [];
+        else if (languages.length) spec.languages = languages.map((l) => Number(itemId(l))).filter((n) => Number.isFinite(n));
+        if (useHours && hasLifetime) spec.schedule = scheduleSpec(days, hStart, hEnd);
+        if (goal === "REACH" && freqTimes.trim()) spec.frequency_cap = freqSpec(freqTimes, freqDays);
+        if (inventory) spec.inventory_filter = inventory as Inventory;
         for (const k of Object.keys(spec) as (keyof AdSetSpec)[]) if (spec[k] === undefined) delete spec[k];
         if (!Object.keys(spec).length) throw new Error("Nothing was changed.");
         await submit({ title: `Edit ad set "${a.name}"`, ops: [{ type: "edit_adset", adset: a.id, ...spec }] });
@@ -617,6 +787,16 @@ export function EditAdSetForm({ options, submit, close, adset: a, campaign: c }:
         <label><span>Start</span><input type="datetime-local" value={v.start} onChange={(e) => set("start")(e.target.value)} /></label>
         <label><span>End</span><input type="datetime-local" value={v.end} onChange={(e) => set("end")(e.target.value)} /></label>
       </div>
+      {hasLifetime && (
+        <>
+          <label className="check" style={{ marginBottom: 10 }}>
+            <input type="checkbox" checked={useHours} onChange={(e) => setUseHours(e.target.checked)} />
+            Set new hours: run only at set hours (replaces any hours set now)
+          </label>
+          {useHours && <HoursFields days={days} setDays={setDays} start={hStart} setStart={setHStart} end={hEnd} setEnd={setHEnd} />}
+        </>
+      )}
+      {goal === "REACH" && <FreqFields times={freqTimes} setTimes={setFreqTimes} days={freqDays} setDays={setFreqDays} keep />}
       <div className={s.section}>Audience</div>
       <div className="row">
         <label><span>Age from</span><input value={v.ageMin} onChange={(e) => set("ageMin")(e.target.value)} inputMode="numeric" /></label>
@@ -632,6 +812,28 @@ export function EditAdSetForm({ options, submit, close, adset: a, campaign: c }:
             <option value="off">Off</option>
           </select>
         </label>
+      </div>
+      <div className="row">
+        <label>
+          <span>Reach beyond the detailed targeting (interests)</span>
+          <select value={v.expansion} onChange={(e) => set("expansion")(e.target.value)}>
+            <option value="on">On: Meta may reach more people</option>
+            <option value="off">Off</option>
+          </select>
+        </label>
+        <label><span>Brand safety: where ads may show</span><Select value={inventory} onChange={setInventory} list={INVENTORY} blank="Keep as it is" /></label>
+      </div>
+      <div className="row">
+        <div className="field">
+          <span>Languages (search){localeCount ? ` · now ${localeCount} language${localeCount === 1 ? "" : "s"}; picking here replaces them` : " · now all languages"}</span>
+          {!allLanguages && <SearchMulti what="languages" picked={languages} onChange={setLanguages} placeholder="Type a language, e.g. Hindi" />}
+          {localeCount > 0 && (
+            <label className="check" style={{ marginTop: 4 }}>
+              <input type="checkbox" checked={allLanguages} onChange={(e) => setAllLanguages(e.target.checked)} />
+              Show to people of all languages
+            </label>
+          )}
+        </div>
       </div>
       <p className="hint" style={{ marginTop: -6 }}>Changing countries replaces any cities or states on this ad set. Only the boxes you change are sent.</p>
     </FormBox>
@@ -717,12 +919,99 @@ export function CopyAdSetForm({ tree, submit, close, adset: a, campaign: c }: Fo
 
 // ---------- Ads from an existing post ----------
 
+interface PostItem {
+  source?: "facebook_page" | "ad";
+  post_id?: string | null;
+  instagram_media_id?: string | null;
+  text?: string;
+  created?: string;
+  link?: string;
+  can_promote?: boolean | null;
+  ad_name?: string;
+  page_id?: string;
+  problem?: string;
+}
+
+/** Recent Page posts and the posts behind this account's ads; click one to use it. */
+function PostFinder({ onPick, close }: { onPick: (p: PostItem, as: "facebook" | "instagram") => void; close: () => void }) {
+  const [q, setQ] = useState("");
+  const [items, setItems] = useState<PostItem[] | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    setError("");
+    try {
+      const r = await api<{ items: PostItem[] }>(`/api/manage/lookup?what=posts${q.trim() ? `&q=${encodeURIComponent(q.trim())}` : ""}`);
+      setItems(r.items ?? []);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    // Load once when opened; the Search button loads again with the typed text.
+    void load();
+  }, []);
+
+  const usable = (items ?? []).filter((p) => !p.problem && (p.post_id || p.instagram_media_id));
+  const problems = (items ?? []).filter((p) => p.problem);
+  const day = (iso?: string) => (iso ? new Date(iso).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "");
+
+  return (
+    <div className={s.subBox}>
+      <div className="row" style={{ marginBottom: 8 }}>
+        <label><span>Search post text or ad name (or type a Page ID)</span><input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void load(); }} placeholder="e.g. Diwali" /></label>
+        <button type="button" disabled={loading} onClick={() => void load()}>{loading ? "Loading…" : "Search"}</button>
+        <button type="button" className="link" onClick={close}>Hide</button>
+      </div>
+      {error && <div className={msgClass(error)}>{error}</div>}
+      {problems.map((p, i) => <div key={i} className="msg warning">Page {p.page_id}: {p.problem}</div>)}
+      {items && !usable.length && !loading && <p className="muted" style={{ margin: 0 }}>No posts found.</p>}
+      {usable.length > 0 && (
+        <div className={s.postList}>
+          {usable.map((p, i) => (
+            <div key={i} className={s.postRow}>
+              <div className="grow">
+                {p.source === "facebook_page" ? (
+                  <>
+                    <strong style={{ fontWeight: 600 }}>Facebook post</strong> {day(p.created)}
+                    {p.can_promote === false && <span className="muted"> · Meta says it can’t be used in ads</span>}
+                    <div className="hint" style={{ marginTop: 2 }}>{p.text ? `“${p.text}”` : "(no text)"}</div>
+                  </>
+                ) : (
+                  <>
+                    <strong style={{ fontWeight: 600 }}>Used in ad “{p.ad_name}”</strong>
+                  </>
+                )}
+                <div className={s.ids}>
+                  {p.post_id && <>Post {p.post_id} </>}
+                  {p.instagram_media_id && <>· Instagram {p.instagram_media_id}</>}
+                </div>
+              </div>
+              <div className={s.actions} style={{ marginTop: 0 }}>
+                {p.post_id && <button type="button" onClick={() => onPick(p, "facebook")}>Use{p.instagram_media_id ? " Facebook post" : ""}</button>}
+                {p.instagram_media_id && <button type="button" onClick={() => onPick(p, "instagram")}>Use{p.post_id ? " Instagram post" : ""}</button>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PostAdsForm({ tree, submit, close }: FormProps) {
   const [postId, setPostId] = useState("");
   const [source, setSource] = useState<"facebook" | "instagram">("facebook");
   const [picked, setPicked] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [page, setPage] = useState("");
+  const [igUser, setIgUser] = useState("");
+  const [finding, setFinding] = useState(false);
 
   return (
     <FormBox
@@ -730,11 +1019,13 @@ export function PostAdsForm({ tree, submit, close }: FormProps) {
       close={close}
       hint="One ad per ad set, all using the same post, so likes and comments add up on it. Ads are made switched off."
       onSubmit={async () => {
-        if (!postId.trim()) throw new Error("Type the post ID.");
+        if (!postId.trim()) throw new Error("Type the post ID, or click Find a post.");
         if (!picked.length) throw new Error("Tick at least one ad set.");
+        if (source === "instagram" && !igUser.trim()) throw new Error("Type the Instagram account ID the post belongs to.");
         const op: Op = { type: "ads_from_post", post_id: postId.trim(), source, adsets: picked, status: "PAUSED" };
         if (name.trim()) op.name = name.trim();
         if (source === "facebook" && page) op.page_id = page;
+        if (source === "instagram") op.instagram_user_id = igUser.trim();
         await submit({ title: `Ads from post ${postId.trim()} in ${picked.length} ad set${picked.length > 1 ? "s" : ""}`, ops: [op] });
       }}
     >
@@ -748,23 +1039,45 @@ export function PostAdsForm({ tree, submit, close }: FormProps) {
           </select>
         </label>
       </div>
+      {!finding ? (
+        <button type="button" className="link" style={{ marginBottom: 12 }} onClick={() => setFinding(true)}>Find a post</button>
+      ) : (
+        <PostFinder
+          close={() => setFinding(false)}
+          onPick={(p, as) => {
+            setSource(as);
+            setPostId(String((as === "instagram" ? p.instagram_media_id : p.post_id) ?? ""));
+            setFinding(false);
+          }}
+        />
+      )}
       <div className="row">
         <label><span>Ad name (optional)</span><input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Diwali offer post" /></label>
         {source === "facebook" && <label><span>Facebook Page of the post</span><ListSelect what="pages" value={page} onChange={setPage} none="Not needed (ID has the page)" /></label>}
+        {source === "instagram" && <label><span>Instagram account ID (needed)</span><input value={igUser} onChange={(e) => setIgUser(e.target.value)} placeholder="e.g. 17841400000000000" /></label>}
       </div>
       <div className={s.section}>Ad sets to put the ad in</div>
+      <AdSetChecklist tree={tree} picked={picked} setPicked={setPicked} />
+    </FormBox>
+  );
+}
+
+/** Every ad set in the campaign list, grouped by campaign, with a tick box each. */
+export function AdSetChecklist({ tree, picked, setPicked }: { tree: FormProps["tree"]; picked: string[]; setPicked: (v: string[]) => void }) {
+  if (!tree.campaigns.some((c) => c.adsets.length)) return <p className="muted">There are no ad sets yet.</p>;
+  return (
+    <>
       {tree.campaigns.filter((c) => c.adsets.length).map((c) => (
         <div key={c.id} style={{ marginBottom: 10 }}>
           <small>{c.name}</small>
           {c.adsets.map((a) => (
             <label key={a.id} className="check" style={{ marginTop: 4 }}>
               <input type="checkbox" checked={picked.includes(a.id)} onChange={(e) => setPicked(e.target.checked ? [...picked, a.id] : picked.filter((x) => x !== a.id))} />
-              {a.name} <span className="muted">({a.dailyBudget !== null ? `${rupees(a.dailyBudget)} a day` : a.details.budget})</span>
+              {a.name} <span className="muted">({a.dailyBudget !== null ? `${rupees(a.dailyBudget, tree.currency)} a day` : a.details.budget})</span>
             </label>
           ))}
         </div>
       ))}
-      {!tree.campaigns.some((c) => c.adsets.length) && <p className="muted">There are no ad sets yet.</p>}
-    </FormBox>
+    </>
   );
 }

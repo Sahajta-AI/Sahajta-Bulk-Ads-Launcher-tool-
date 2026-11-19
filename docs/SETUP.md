@@ -167,6 +167,29 @@ The build takes 5–8 minutes. Then open https://launcher.sahajta.com, sign in, 
 
 To rebuild a fresh machine later: steps O1–O4, copy the old `.env` (from your password manager), then `RESTORE_FROM=<backup URL> ./deploy/bootstrap.sh`. Total: under 15 minutes.
 
+### O5b. Put a new version on the server
+
+1. Copy the new code to the server (step O4: `git pull` or `rsync`).
+2. Rebuild and restart:
+
+   ```bash
+   cd ~/ads-launcher && sudo docker compose up -d --build
+   ```
+
+3. Remove the old image and old build layers. Each rebuild leaves about 1–2 GB on the disk:
+
+   ```bash
+   sudo docker image prune -f && sudo docker builder prune -f --filter until=24h
+   ```
+
+4. Check: `curl -s https://launcher.sahajta.com/api/health` shows `"ok":true`.
+
+`./deploy/bootstrap.sh` does steps 2 and 3 too.
+
+A launch or plan that runs during the restart does not stop for good. The worker gives the running job 8 seconds, puts it back in the queue and continues it after the restart. Nothing is created twice.
+
+Logs of each container are limited to 3 files of 10 MB (`docker-compose.yml`). After the first deploy with this limit, `docker compose up -d` makes the containers again; this is expected.
+
 ### O6. Backups to Object Storage
 
 1. Console → **Storage → Buckets → Create bucket** `ads-launcher-backups` (Standard, private).
@@ -174,7 +197,7 @@ To rebuild a fresh machine later: steps O1–O4, copy the old `.env` (from your 
 3. Bucket → **Pre-authenticated requests → Create**: target **Bucket**, access **Permit object writes**, expiry e.g. 2030-12-31. Copy the URL (ends with `/o/`) into `.env` as `BACKUP_PAR_URL`.
 4. Restart: `sudo docker compose up -d`. Test: `sudo docker compose exec worker npx tsx scripts/backup.ts` → "Backed up".
 
-The worker backs up after every batch and every night at about 02:00 IST. To restore: download a backup from the bucket (or make a read link for one object), then `./deploy/restore.sh <file or URL>` and `sudo docker compose up -d`.
+The worker backs up after every batch and plan, and every night at about 02:00 IST (if the worker is busy or restarts at 02:00, it does the nightly backup at the next possible time that day). The result of the last backup shows in **Settings → Safety → Backups**. `https://launcher.sahajta.com/api/health` shows only how many hours old the last backup and the last off-site copy are (`backup.ageHours`, `backup.offsiteAgeHours`). If no backup reaches Object Storage for 48 hours, the launcher sends an alert to `ADMIN_EMAIL` (optional, in `.env`; if empty, the first address in `ALLOWED_EMAILS`) and shows it on the home page. To restore: download a backup from the bucket (or make a read link for one object), then `./deploy/restore.sh <file or URL>` and `sudo docker compose up -d`.
 
 ### O7. Alert if the app stops
 

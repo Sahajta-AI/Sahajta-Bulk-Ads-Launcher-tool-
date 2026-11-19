@@ -64,6 +64,10 @@ export const COPY = {
   utmTemplate: "utm_source=meta&utm_medium=paid&utm_campaign={campaign}&utm_content={creative}",
 };
 
+/** COPY with a lead form: the practice account's as1, as3 and as4 collect leads with an Instant form,
+ *  and since 19 Nov a launch there without a lead form is refused before anything is made (B13). */
+export const LEAD_COPY = { ...COPY, leadFormId: "555000111" };
+
 export async function setupBatch(folder: string, opts: { mode?: "existing" | "new_per_ad"; adsetId?: string } = {}) {
   const accountId = upsertAccount({ metaAccountId: "act_1001", name: "Sahajta (mock)", token: "mock-token" });
   const batchId = newBatch(accountId, "test@example.com");

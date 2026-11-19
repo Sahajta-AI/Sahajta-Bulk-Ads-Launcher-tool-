@@ -73,3 +73,18 @@ One line each: what was decided, and why. Newest at the bottom of each section.
 - Results: Meta's API can't edit Ads Manager's column presets or custom metrics, so column sets and formulas live in the launcher (tables `column_sets`, `custom_metrics`). Formulas are parsed by a small parser (numbers, metric names, + - * / and brackets), never `eval`.
 - Default UTM tags for new copy templates use Meta's own URL parameters ({{campaign.name}}, {{adset.name}}, {{ad.name}}, {{ad.id}}), which Meta fills in per ad.
 
+## Fixes and additions after the marketer's tests (18 Nov 2026)
+- Several texts on one file (batch zrhtj, 100/2061015 "link is required"): now a normal link or video ad carrying the first text plus `asset_feed_spec` with every text (`DEGREES_OF_FREEDOM`). Checked with Meta's validate_only on the real account, as were the 9:16 + 4:5 pair with several texts, the display link and the WhatsApp button. The fake Meta now refuses the old shape, so the tests would catch it.
+- Plans keep a model of the account as each step leaves it, so any later step can use what an earlier one made ("$ref", "$ref.2", counting from 1; also exact names). The total is every ad set once, at its final budget, plus campaign budgets (plans psx4n and pwjd6 counted wrong).
+- Ad sets in a campaign without a campaign budget always get a bid strategy (Highest volume unless told otherwise): Meta refused one without it as if it were a bid cap (100/2490487). A bid strategy on such a campaign is not sent (Meta refuses it, 100/1885737); it becomes the default for the plan's ad sets in it.
+- Copies are made one object at a time (campaign, then each ad set, then each ad): Meta copies fewer than 3 objects per request (100/1885194). Each piece is named "[P:plan.step.item]" first, so a crash resumes without doubles.
+- A plan that stopped part-way can be fixed and retried; finished steps are protected and never run again. "Undo this plan" makes a new plan from the values saved before each change (never deletes; turns off what was made).
+- Saved naming templates can be named in plans and batches (by name or ID).
+- A file keeps its ad's own copy when it moves between ads. Failed ads can get new copy after the launch; the retry makes a "v2" creative and never reuses the old one.
+- One new ad set for a whole batch (`new_shared`), next to "a new ad set per ad".
+- The Claude Desktop extension (0.3.0) passes Claude's requests to the launcher's own MCP endpoint, so new tools appear after restarting Claude Desktop without a re-install. Rejected: bundling the tools (needed a re-install for every change). Settings → Claude shows the installed version.
+- New plan steps: edit and copy existing ads, custom audiences (website, video, Page, Instagram, lead form, customer list) and lookalikes. Customer lists are hashed (SHA-256, Meta's normalisation) before the plan is saved, so the launcher never keeps emails or phone numbers.
+- Pre-launch checks: ad account status, payment method, account spending limit, pixel exists / fired / is on the landing page, Meta's own preview per placement (generatepreviews), and a hard daily budget ceiling in Settings that Claude can't change.
+- After launch: delivery, review and learning status per ad set and ad; failure emails sent from the person's own Gmail (gmail.send, given at sign-in). Rejected: an email service (paid) and WhatsApp (would touch Sahajta's WhatsApp Meta app).
+- Meta removed `targeting_optimization` (detailed targeting expansion is now always on, 100/1870197), and allows a frequency cap only in Awareness or Engagement campaigns (100/1815210). The plan check says both plainly.
+

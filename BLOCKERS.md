@@ -32,6 +32,11 @@ Nothing here ran against the real Meta, Google or Oracle accounts: the project h
 
 **Not proven on the real account yet (17 Nov 2026):** creating, copying and turning on through plans, ads from an existing post, and "launch now / schedule". Proven: reads (campaigns, budgets, results), the Instagram check, and Meta's `validate_only` check of a campaign create. All of it is covered by tests against the fake Meta (68 tests).
 
+**After the 18 Nov update (one-time steps):**
+- Claude Desktop: download the extension again from Settings → Claude connection and install it once (0.3.0). After that, new tools appear after restarting Claude Desktop.
+- Failure emails: in the Google Cloud project, switch on the Gmail API (APIs & Services → Library → Gmail API → Enable; free). Then each person signs out of the launcher and in again and allows "send email on your behalf". Until then, alerts show on the launcher's home page only.
+- Not tried on the real account yet (checked only with Meta's validate_only or not at all): budget scheduling on campaigns, custom audiences and lookalikes (Meta has no validate_only for audiences; the ad account must have accepted the Custom Audience terms), copying ads, editing ad texts, swapping a file, the WhatsApp button with a chosen number, Gmail alerts.
+
 **Ad account from an agency.** The agency shares its ad account with the Sahajta AI business or with the marketer's Facebook account, with full control; then it appears in the Connect Meta list. Risk: Meta's docs say an app "managing other people's ad accounts" needs advanced access to `ads_management` (App Review). With the marketer as a Tester on the app this is probably not needed; the first `validate_only` check in M7 shows it without creating anything.
 **Also open:** which Page and Instagram account the ads run from. The marketer picks them when connecting.
 

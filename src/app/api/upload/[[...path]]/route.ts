@@ -6,6 +6,7 @@ import { config } from "@/lib/config";
 import { db } from "@/lib/db";
 import { caller } from "@/lib/http";
 import { autoGroup } from "@/lib/engine/preview";
+import { GB, freeBytes } from "@/lib/cleanup";
 import { addLocalFile } from "@/lib/sources/local";
 import { getBatchByKey } from "@/lib/store";
 
@@ -28,6 +29,12 @@ function server() {
     async onUploadCreate(_req, upload) {
       const b = getBatchByKey(upload.metadata?.batch ?? "");
       if (!b || b.status !== "draft") throw { status_code: 400, body: "This batch can't take new files.\n" };
+      // Keep 2 GB free on the server (the database, backups and other uploads need room).
+      const free = freeBytes();
+      const size = Number(upload.size);
+      if (free !== null && Number.isFinite(size) && size > 0 && free - size < 2 * GB) {
+        throw { status_code: 507, body: `The server has only ${(free / GB).toFixed(1)} GB free, too little for this ${(size / GB).toFixed(1)} GB file. Ask your admin to free space, then upload it again.\n` };
+      }
       return {};
     },
     async onUploadFinish(_req, upload) {

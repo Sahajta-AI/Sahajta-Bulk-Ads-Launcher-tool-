@@ -19,6 +19,7 @@ const EMPTY: Draft = { name: "", formula: "", format: "money", description: "" }
 export default function CustomMetrics({ metrics, onChanged }: { metrics: CustomMetricT[]; onChanged: () => Promise<void> }) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState("");
+  const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function save() {
@@ -37,10 +38,13 @@ export default function CustomMetrics({ metrics, onChanged }: { metrics: CustomM
   }
 
   async function remove(m: CustomMetricT) {
-    if (!confirm(`Remove the custom metric “${m.name}”? Column sets that use it will show it as unknown.`)) return;
+    if (!confirm(`Remove the custom metric “${m.name}”? Column sets that show it lose that column.`)) return;
     setError("");
+    setNote("");
     try {
-      await api(`/api/results/custom_metric/${m.id}`, { method: "DELETE" });
+      const r = await api<{ removedFrom?: string[] }>(`/api/results/custom_metric/${m.id}`, { method: "DELETE" });
+      const sets = r.removedFrom ?? [];
+      setNote(`Removed “${m.name}”.${sets.length ? ` It was also taken out of the column set${sets.length > 1 ? "s" : ""} ${sets.map((x) => `“${x}”`).join(", ")}.` : ""}`);
       await onChanged();
     } catch (e) {
       setError((e as Error).message);
@@ -52,9 +56,10 @@ export default function CustomMetrics({ metrics, onChanged }: { metrics: CustomM
       <div className="panel">
         <header>
           <h2>Custom metrics</h2>
-          {!draft && <button className="primary" style={{ marginLeft: "auto" }} onClick={() => { setDraft({ ...EMPTY }); setError(""); }}>Add a metric</button>}
+          {!draft && <button className="primary" style={{ marginLeft: "auto" }} onClick={() => { setDraft({ ...EMPTY }); setError(""); setNote(""); }}>Add a metric</button>}
         </header>
         {error && !draft && <div className="msg error">{error}</div>}
+        {note && !error && !draft && <div className="msg ok">{note}</div>}
         {metrics.length === 0 && <p className="muted">No custom metrics yet. Add one to see things like cost per site visit.</p>}
         {metrics.map((m) => (
           <div key={m.id} className="list-item">

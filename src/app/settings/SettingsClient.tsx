@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { renderName } from "@/lib/engine/naming";
-import type { Templates } from "../batches/[key]/BatchClient";
+import { DEFAULT_UTM, renderName } from "@/lib/engine/naming";
 import IdentityCard from "../IdentityCard";
 import type { Identities } from "@/lib/service";
-import { api } from "../client-api";
+import { api, type Templates } from "../client-api";
+import { ist } from "../manage/util";
 import MetaTab from "./MetaTab";
+import SafetyTab from "./SafetyTab";
+import { copyBody, createKeyWith, keyUseText, presetBody, presetForm } from "./settings-logic";
 
 type FullTemplates = Templates & { features: { key: string; label: string }[] };
 type CopyT = Templates["copy"][number];
@@ -27,11 +29,44 @@ const TABS = [
   ["copy", "Copy"],
   ["naming", "Names"],
   ["presets", "Ad presets"],
+  ["safety", "Safety"],
   ["claude", "Claude"],
   ["status", "Status"],
 ] as const;
 
-function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; ctas: string[]; onSaved: () => void; onCancel: () => void }) {
+interface LeadForm { id: string; name: string; status?: string; page_id: string }
+
+/** Lead form picker: the forms on the ad account's Pages, or a plain ID box if Meta can't list them. */
+function LeadFormField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [forms, setForms] = useState<LeadForm[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    api<{ items: Partial<LeadForm>[] }>("/api/manage/lookup?what=lead_forms")
+      .then((r) => setForms(r.items.filter((f): f is LeadForm => !!f.id)))
+      .catch(() => setFailed(true));
+  }, []);
+
+  if (failed || (forms && !forms.length)) {
+    return (
+      <label className="field"><span>Lead form ID (only for ad sets that collect leads on Facebook)</span>
+        <input value={value} inputMode="numeric" onChange={(e) => onChange(e.target.value.trim())} placeholder="Leave empty for none" />
+        <small>{failed ? "Couldn't load your lead forms from Meta. Paste the form ID instead." : "No lead forms found on your Pages. Paste a form ID if you have one."}</small>
+      </label>
+    );
+  }
+  return (
+    <label className="field"><span>Lead form (only for ad sets that collect leads on Facebook)</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} disabled={!forms}>
+        <option value="">{forms ? "None" : "Loading lead forms…"}</option>
+        {forms?.map((f) => <option key={f.id} value={f.id}>{f.name}{f.status && f.status !== "ACTIVE" ? ` (${f.status.toLowerCase()})` : ""} · ID {f.id}</option>)}
+        {value && !forms?.some((f) => f.id === value) && <option value={value}>Form ID {value}</option>}
+      </select>
+    </label>
+  );
+}
+
+export function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; ctas: string[]; onSaved: () => void; onCancel: () => void }) {
   const pad = (a?: string[]) => [...(a ?? []), "", "", "", "", ""].slice(0, 5);
   const [name, setName] = useState(t.name ?? "");
   const [texts, setTexts] = useState(pad(t.primaryTexts));
@@ -39,15 +74,23 @@ function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; ctas: s
   const [desc, setDesc] = useState(t.description ?? "");
   const [cta, setCta] = useState(t.cta ?? "LEARN_MORE");
   const [link, setLink] = useState(t.linkUrl ?? "");
-  const [utm, setUtm] = useState(t.utmTemplate ?? "utm_source=meta&utm_medium=paid&utm_campaign={campaign}&utm_content={creative}");
+  const [utm, setUtm] = useState(t.utmTemplate ?? DEFAULT_UTM);
+  const [displayLink, setDisplayLink] = useState(t.displayLink ?? "");
+  const [leadFormId, setLeadFormId] = useState(t.leadFormId ?? "");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   async function save() {
+    if (busy) return;
+    setBusy(true);
+    setError("");
     try {
-      await api("/api/templates", { method: "POST", body: { kind: "copy", id: t.id, name, primaryTexts: texts, headlines: heads, description: desc, cta, linkUrl: link, utmTemplate: utm } });
+      await api("/api/templates", { method: "POST", body: copyBody({ id: t.id, name, texts, heads, desc, cta, link, utm, displayLink, leadFormId }) });
       onSaved();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -77,14 +120,16 @@ function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; ctas: s
             <select value={cta} onChange={(e) => setCta(e.target.value)}>{ctas.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ").toLowerCase()}</option>)}</select>
           </label>
           <label className="field"><span>Landing page URL</span><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></label>
+          <label className="field"><span>Display link (short link shown on the ad)</span><input value={displayLink} onChange={(e) => setDisplayLink(e.target.value)} placeholder="e.g. sahajta.com/visit" /></label>
+          <LeadFormField value={leadFormId} onChange={setLeadFormId} />
           <label className="field"><span>UTM template (added to the link)</span><input value={utm} onChange={(e) => setUtm(e.target.value)} /></label>
           <small>Use {"{campaign}"}, {"{creative}"}, {"{angle}"}, {"{date}"}, or Meta&apos;s own {"{{ad.name}}"}.</small>
         </div>
       </div>
       {error && <div className="msg error">{error}</div>}
       <div className="row" style={{ marginTop: 10 }}>
-        <button className="primary" onClick={save}>Save</button>
-        <button onClick={onCancel}>Cancel</button>
+        <button className="primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save"}</button>
+        <button disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
@@ -141,22 +186,29 @@ function NamingTab({ tpl, reload }: { tpl: FullTemplates; reload: () => void }) 
   );
 }
 
-function PresetEditor({ p, features, onSaved, onCancel }: { p: Partial<PresetT>; features: FullTemplates["features"]; onSaved: () => void; onCancel: () => void }) {
-  const [form, setForm] = useState({ id: p.id, name: p.name ?? "", pageId: p.pageId ?? "", pageName: p.pageName ?? "", igUserId: p.igUserId ?? "", igName: p.igName ?? "", multiAdvertiser: p.multiAdvertiser ?? false, isDefault: p.isDefault ?? false });
+export function PresetEditor({ p, features, onSaved, onCancel }: { p: Partial<PresetT>; features: FullTemplates["features"]; onSaved: () => void; onCancel: () => void }) {
+  // Every field the preset has, including Threads and the partner Page, so a save never drops one.
+  const [form, setForm] = useState(() => presetForm(p));
   const [on, setOn] = useState<Set<string>>(new Set(p.enhancementsOn ?? []));
   const [ids, setIds] = useState<Identities | null>(null);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     api<typeof ids>("/api/identities").then(setIds).catch((e: Error) => setError(e.message));
   }, []);
 
   async function save() {
+    if (busy) return;
+    setBusy(true);
+    setError("");
     try {
-      await api("/api/templates", { method: "POST", body: { kind: "preset", ...form, enhancements: Object.fromEntries([...on].map((k) => [k, "OPT_IN"])) } });
+      await api("/api/templates", { method: "POST", body: presetBody(form, on) });
       onSaved();
     } catch (e) {
       setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -187,6 +239,21 @@ function PresetEditor({ p, features, onSaved, onCancel }: { p: Partial<PresetT>;
           return <IdentityCard kind="instagram" name={ig?.username ?? form.igName ?? form.igUserId} id={form.igUserId} pictureUrl={ig?.pictureUrl} link={ig?.link ?? (form.igName ? `https://www.instagram.com/${form.igName}` : null)} warning={bad ? "This ad account is not allowed to use this Instagram account, so Meta would refuse every ad. Pick another one or None, or assign it to the ad account in Meta Business settings → Instagram accounts → Assign assets." : null} />;
         })()}
       </div>
+      <label className="field" style={{ marginTop: 10, maxWidth: 320 }}>
+        <span>WhatsApp number</span>
+        <input type="tel" value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} placeholder="+919812345678" />
+        <small>For &apos;Send WhatsApp message&apos; buttons, with country code.</small>
+      </label>
+      <div className="row" style={{ marginTop: 10 }}>
+        <label><span>Threads account ID</span>
+          <input inputMode="numeric" value={form.threadsUserId} onChange={(e) => setForm({ ...form, threadsUserId: e.target.value })} placeholder="Leave empty for none" />
+          <small>The Threads profile shown on ads in Threads.</small>
+        </label>
+        <label><span>Partner Page ID (partnership ads)</span>
+          <input inputMode="numeric" value={form.sponsorPageId} onChange={(e) => setForm({ ...form, sponsorPageId: e.target.value })} placeholder="Leave empty for none" />
+          <small>The partner&apos;s Facebook Page; the ads show &apos;Paid partnership&apos;. The Page needs a linked Instagram account.</small>
+        </label>
+      </div>
       <h2 style={{ marginTop: 16 }}>AI creative enhancements</h2>
       <p className="muted">Off means Meta shows your files and text exactly as you made them. Tick only what you want Meta to change.</p>
       <div className="grid2">
@@ -200,16 +267,30 @@ function PresetEditor({ p, features, onSaved, onCancel }: { p: Partial<PresetT>;
       <label className="check" style={{ marginTop: 12 }}><input type="checkbox" checked={form.multiAdvertiser} onChange={(e) => setForm({ ...form, multiAdvertiser: e.target.checked })} /> Allow multi-advertiser ads (your ad may show next to other brands' ads)</label>
       <label className="check"><input type="checkbox" checked={form.isDefault} onChange={(e) => setForm({ ...form, isDefault: e.target.checked })} /> Use for new batches</label>
       {error && <div className="msg error">{error}</div>}
-      <div className="row" style={{ marginTop: 10 }}><button className="primary" onClick={save}>Save</button><button onClick={onCancel}>Cancel</button></div>
+      <div className="row" style={{ marginTop: 10 }}><button className="primary" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save"}</button><button disabled={busy} onClick={onCancel}>Cancel</button></div>
     </div>
   );
 }
 
 function ClaudeTab({ appUrl }: { appUrl: string }) {
-  const [keys, setKeys] = useState<{ id: number; label: string; hint: string; createdAt: string; lastUsedAt: string | null }[]>([]);
+  const [keys, setKeys] = useState<{ id: number; label: string; hint: string; createdAt: string; lastUsedAt: string | null; extension: { version: string; at: string } | null; latestExtension: string }[]>([]);
   const [fresh, setFresh] = useState("");
-  const load = useCallback(() => api<typeof keys>("/api/keys").then(setKeys), []);
+  const [creating, setCreating] = useState(false);
+  const [keyError, setKeyError] = useState("");
+  const load = useCallback(() => api<typeof keys>("/api/keys").then(setKeys).catch((e: Error) => setKeyError(e.message)), []);
   useEffect(() => void load(), [load]);
+
+  async function createKey() {
+    if (creating) return;
+    setCreating(true);
+    setKeyError("");
+    const r = await createKeyWith(() => api<{ key: string }>("/api/keys", { method: "POST", body: { label: "Claude" } }));
+    if (r.key) {
+      setFresh(r.key);
+      void load();
+    } else setKeyError(r.error ?? "");
+    setCreating(false);
+  }
 
   return (
     <>
@@ -226,13 +307,25 @@ function ClaudeTab({ appUrl }: { appUrl: string }) {
       </div>
       <div className="panel">
         <header><h2>Your keys</h2>
-          <button className="primary" style={{ marginLeft: "auto" }} onClick={async () => { const r = await api<{ key: string }>("/api/keys", { method: "POST", body: { label: "Claude" } }); setFresh(r.key); void load(); }}>Create a key</button>
+          <button className="primary" style={{ marginLeft: "auto" }} disabled={creating} onClick={() => void createKey()}>{creating ? "Creating…" : "Create a key"}</button>
         </header>
+        {keyError && <div className="msg error">{keyError}</div>}
         {fresh && <div className="msg ok">Copy this key now; it won&apos;t be shown again:<div className="secret">{fresh}</div></div>}
         {keys.map((k) => (
           <div className="list-item" key={k.id}>
-            <div className="grow">{k.label} ending in <code>{k.hint}</code> <small>· created {k.createdAt.slice(0, 10)} · {k.lastUsedAt ? `last used ${k.lastUsedAt.slice(0, 16)}` : "never used"}</small></div>
-            <button className="danger" onClick={() => confirm("Remove this key? Claude stops working with it straight away.") && api(`/api/keys/${k.id}`, { method: "DELETE" }).then(load).catch((e: Error) => alert(e.message))}>Remove</button>
+            <div className="grow">
+              {k.label} ending in <code>{k.hint}</code> <small>· {keyUseText(k)}</small>
+              {k.lastUsedAt && (
+                <div><small>
+                  {k.extension
+                    ? k.extension.version === k.latestExtension
+                      ? `Claude Desktop extension ${k.extension.version} (latest). New launcher tools show up after restarting Claude Desktop.`
+                      : `Claude Desktop extension ${k.extension.version}: download ${k.latestExtension} below and install it once. After that, new tools show up without installing again.`
+                    : "Used from Claude Code, or from a Claude Desktop extension older than 0.3.0 (if so, install the new one below once)."}
+                </small></div>
+              )}
+            </div>
+            <button className="danger" onClick={() => confirm("Remove this key? Claude stops working with it straight away.") && api(`/api/keys/${k.id}`, { method: "DELETE" }).then(load).catch((e: Error) => setKeyError(e.message))}>Remove</button>
           </div>
         ))}
         {!keys.length && <p className="muted">No keys yet.</p>}
@@ -303,6 +396,8 @@ export default function SettingsClient({ status }: { status: Status }) {
           </div>
         )
       )}
+
+      {tab === "safety" && <SafetyTab />}
 
       {tab === "claude" && <ClaudeTab appUrl={status.appUrl} />}
 

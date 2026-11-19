@@ -268,4 +268,85 @@ export const migrations: string[] = [
     description TEXT NOT NULL DEFAULT ''
   );
   `,
+  // 4: Fixes from the 17 Nov tests: a file keeps its own copy when it moves between ads, the post
+  //    behind each created ad, app-wide settings (daily budget ceiling, alerts), one shared new ad set.
+  `
+  ALTER TABLE assets ADD COLUMN copy_override TEXT;   -- the copy of the ad this file was in, kept when the file moves
+  ALTER TABLE assets ADD COLUMN angle TEXT;
+  ALTER TABLE ads ADD COLUMN meta_post_id TEXT;       -- Facebook post behind the ad (pageid_postid), for "ads from a post"
+  ALTER TABLE ads ADD COLUMN meta_ig_media_id TEXT;   -- Instagram media behind the ad
+  ALTER TABLE batches ADD COLUMN shared_adset_id TEXT; -- adset_mode 'new_shared': the one new ad set all ads go into
+  ALTER TABLE copy_templates ADD COLUMN display_link TEXT NOT NULL DEFAULT '';
+  ALTER TABLE copy_templates ADD COLUMN lead_form_id TEXT NOT NULL DEFAULT '';
+  ALTER TABLE settings_presets ADD COLUMN whatsapp_number TEXT NOT NULL DEFAULT '';
+  ALTER TABLE settings_presets ADD COLUMN threads_user_id TEXT NOT NULL DEFAULT '';
+  ALTER TABLE settings_presets ADD COLUMN sponsor_page_id TEXT NOT NULL DEFAULT '';
+  -- One UTM default (17 Nov tests): templates still on the first default get the current one.
+  UPDATE copy_templates SET utm_template = 'utm_source=facebook&utm_medium=paid&utm_campaign={{campaign.name}}&utm_term={{adset.name}}&utm_content={{ad.name}}&utm_id={{ad.id}}'
+    WHERE utm_template = 'utm_source=meta&utm_medium=paid&utm_campaign={campaign}&utm_content={creative}';
+  CREATE TABLE app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_by TEXT,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
+  // 5: Review fixes (19 Nov): the yes given at launch (the typed total) must not turn ads on after the
+  //    launch was stopped, after a Retry pressed long after the launch, or for more than was typed.
+  `
+  ALTER TABLE batches ADD COLUMN stopped_at TEXT;  -- ISO time "Stop the launch" was pressed (this batch or one launched with it)
+  ALTER TABLE batches ADD COLUMN retried_at TEXT;  -- ISO time "Retry" was last pressed
+  ALTER TABLE batches ADD COLUMN go_live_total TEXT; -- the total daily budget typed back at launch ("₹1,500"), for "now" / "at a time"
+  `,
+  // 6: Second review (19 Nov): one turn-on plan for all the ad sets of a launch, found by its batch (not
+  //    its title); lifetime budgets compared at the moment the total was typed; a late Retry measured
+  //    from the end of the run before it (or the set time); Stops pressed before migration 5 still count.
+  //    Old turn-on plans are found by the mark the launcher left when it confirmed them ("… (when
+  //    launching batch KEY)", kept when the plan is renamed), else by their first title.
+  `
+  ALTER TABLE plans ADD COLUMN batch_id INTEGER;          -- a batch launch's turn-on plan: the lowest id of the batches it turns on
+  UPDATE plans SET batch_id = COALESCE(
+    (SELECT b.id FROM batches b WHERE plans.confirmed_by IS NOT NULL
+       AND substr(plans.confirmed_by, -length(' (when launching batch ' || b.key || ')')) = ' (when launching batch ' || b.key || ')'),
+    (SELECT b.id FROM batches b WHERE substr(plans.title, 1, length('Turn on batch ' || b.key || ' (')) = 'Turn on batch ' || b.key || ' (')
+  ) WHERE confirmed_by LIKE '% (when launching batch %)' OR title LIKE 'Turn on batch %';
+  CREATE INDEX plans_batch ON plans(batch_id);
+  ALTER TABLE batches ADD COLUMN go_live_total_at TEXT;   -- ISO time the typed total was worked out for (lifetime budgets ÷ days left from then)
+  ALTER TABLE batches ADD COLUMN late_retry_from TEXT;    -- a Retry pressed more than an hour after this time (end of the run before it, or the set time): the yes given at launch no longer turns the ads on
+  UPDATE batches SET stopped_at = COALESCE(finished_at, launched_at, created_at) WHERE cancel_requested = 1 AND stopped_at IS NULL;
+  -- A Retry already held by the old rule (more than an hour after the launch started, or after the set time) stays held.
+  UPDATE batches SET late_retry_from = COALESCE(launched_at, finished_at)
+    WHERE go_live = 'now' AND go_live_done = 0 AND retried_at IS NOT NULL AND launched_at IS NOT NULL
+      AND (julianday(retried_at) - julianday(launched_at)) * 24 > 1;
+  UPDATE batches SET late_retry_from = go_live_at
+    WHERE go_live = 'at' AND go_live_done = 0 AND retried_at IS NOT NULL AND go_live_at IS NOT NULL
+      AND (julianday(retried_at) - julianday(go_live_at)) * 24 > 1;
+  `,
+  // 7: the marketer's 19 Nov retest: the same ads into several ad sets share one creative (one post) when
+  //    the creative sent to Meta is the same, and the time left of a launch uses how fast ads go in.
+  `
+  ALTER TABLE ads ADD COLUMN creative_hash TEXT;     -- hash of the creative sent to Meta, all but its name (and its version): same hash in one launch = one shared creative
+  ALTER TABLE ads ADD COLUMN done_at INTEGER;        -- ms when the ad was created in Meta
+  ALTER TABLE ads ADD COLUMN work_points INTEGER;    -- Meta points this ad's own steps used (uploads, creative, ad, reads), for the time left
+  CREATE INDEX ads_creative_hash ON ads(creative_hash);
+  `,
+  // 8: Review of shared creatives (19 Nov): the creatives a launch made, kept apart from the ads, so a
+  //    copy change on the ad that made one (or a Retry that gives an ad its own) never hides it from the
+  //    other ad sets of the launch: they still use it instead of making an identical second one.
+  `
+  CREATE TABLE launch_creatives (
+    launch TEXT NOT NULL,              -- the batches' group_key, or 'batch:<id>' for a launch into one ad set
+    ad_account_id INTEGER NOT NULL,
+    creative_hash TEXT NOT NULL,       -- as ads.creative_hash
+    meta_creative_id TEXT NOT NULL,
+    ad_key TEXT NOT NULL,              -- the ad whose key is in the creative's name
+    feature_warnings TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (launch, ad_account_id, creative_hash)
+  );
+  INSERT OR IGNORE INTO launch_creatives (launch, ad_account_id, creative_hash, meta_creative_id, ad_key, feature_warnings)
+    SELECT COALESCE(b.group_key, 'batch:' || b.id), b.ad_account_id, a.creative_hash, a.meta_creative_id, a.key, a.feature_warnings
+    FROM ads a JOIN batches b ON b.id = a.batch_id
+    WHERE a.creative_hash IS NOT NULL AND a.meta_creative_id IS NOT NULL ORDER BY a.id;
+  `,
 ];

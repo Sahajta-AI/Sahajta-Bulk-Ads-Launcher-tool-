@@ -8,7 +8,7 @@ import { localFiles } from "@/lib/sources/local";
 import { launchBatch, updateSettings, cancelBatch } from "@/lib/service";
 import { getAds, getBatch, updateBatch } from "@/lib/store";
 import { FakeClock, MockMeta } from "@/lib/meta/mock";
-import { fifteenFileFolder, freshDb, setupBatch } from "./helpers";
+import { COPY, fifteenFileFolder, freshDb, setupBatch } from "./helpers";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -35,6 +35,9 @@ beforeEach(() => {
 async function batchWithBudget() {
   const { accountId, batchId } = await setupBatch(folder);
   db().prepare("UPDATE ad_accounts SET is_default = 1 WHERE id = ?").run(accountId);
+  // as1 and as4 in the practice account collect leads with an Instant form: Meta refuses ads there
+  // without a lead form, and since 19 Nov the launch is refused before anything is made.
+  updateBatch(batchId, { copy: JSON.stringify({ ...COPY, leadFormId: "555000111" }) });
   const key = getBatch(batchId)!.key;
   return { accountId, batchId, key };
 }
@@ -59,13 +62,15 @@ describe("launch now / scheduled, with the budget guardrail", () => {
       const r = await runBatch(id, deps);
       if (r.failed) console.log(getAds(id).filter((a) => a.status === "failed").map((a) => a.error));
       expect(r).toEqual({ done: 9, failed: 0 });
-      expect(await queueGoLive(id)).toMatch(/Turning the ads on now/);
-      expect(await queueGoLive(id)).toBeNull(); // only once
+      // The ad sets of one launch are turned on together, by one plan: the first waits for the second.
+      expect(await queueGoLive(id)).toMatch(id === batchId ? /waits for the other ad sets of this launch/ : /Turning the ads on now/);
     }
+    expect(await queueGoLive(batchId)).toBeNull(); // only once, for both
+    expect(await queueGoLive(sib.id)).toBeNull();
     const m = mockMeta();
     expect(m.of("ad").every((a) => a.status === "PAUSED")).toBe(true); // created paused
     const plans = db().prepare("SELECT id, status, confirmed_by FROM plans").all() as { id: number; status: string; confirmed_by: string }[];
-    expect(plans).toHaveLength(2);
+    expect(plans).toHaveLength(1);
     expect(plans.every((p) => p.status === "queued" && p.confirmed_by.includes("when launching batch"))).toBe(true);
     for (const p of plans) await runPlan(p.id, { client: clientFor(accountId), clock });
     expect(m.of("ad")).toHaveLength(18);
@@ -97,7 +102,7 @@ describe("launch now / scheduled, with the budget guardrail", () => {
     const { key, batchId } = await batchWithBudget();
     mockMeta();
     await launchBatch(key, { confirm: true, acceptWarnings: true });
-    expect(cancelBatch(key)).toBe("cancelled");
+    expect(cancelBatch(key).cancelled.map((c) => [c.key, c.result])).toEqual([[key, "cancelled"]]);
     expect(getBatch(batchId)!.status).toBe("failed");
     expect(getAds(batchId).every((a) => a.status === "failed" && /Cancelled/.test(a.error ?? ""))).toBe(true);
     expect(db().prepare("SELECT COUNT(*) FROM jobs WHERE status = 'queued'").pluck().get()).toBe(0);

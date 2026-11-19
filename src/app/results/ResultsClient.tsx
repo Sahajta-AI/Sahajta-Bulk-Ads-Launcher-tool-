@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../client-api";
+import { msgClass } from "../msg";
 import ColumnsEditor from "./ColumnsEditor";
 import CustomMetrics from "./CustomMetrics";
-import { BREAKDOWNS, DATES, LEVELS, breakdownLabel, breakdownValue, formatValue, isConnectionError } from "./shared";
+import { BREAKDOWNS, DATES, LEVELS, breakdownLabel, breakdownValue, formatValue, isConnectionError, withPlatform, zoneNote } from "./shared";
 import type { Catalog, Level, ResultData } from "./shared";
 import s from "./results.module.css";
 
@@ -39,7 +40,7 @@ function readSaved(): Partial<Controls> {
 
 function ErrorMsg({ text }: { text: string }) {
   return (
-    <div className="msg error">
+    <div className={msgClass(text)}>
       {text}
       {isConnectionError(text) && <> <a href="/settings#meta">Open Settings → Meta</a></>}
     </div>
@@ -104,19 +105,21 @@ export default function ResultsClient() {
       if (c.since > c.until) return setError("The start date is after the end date.");
     }
     setLoading(true);
+    // Placement alone is always refused by Meta: Platform comes with it (and shows as a column).
+    const breakdowns = withPlatform(c.breakdowns);
     try {
       const body = {
         action: "query",
         level: c.level,
         metrics,
-        breakdowns: c.breakdowns,
+        breakdowns,
         ...(c.date === "custom" ? { since: c.since, until: c.until } : { date_preset: c.date }),
         ...(filterIds.length ? { ids: filterIds } : {}),
       };
       const data = await api<ResultData>("/api/results", { method: "POST", body });
       const fmt = (d: string) => new Date(`${d}T00:00:00`).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
       const rangeLabel = c.date === "custom" ? `${fmt(c.since)} to ${fmt(c.until)}` : DATES.find(([k]) => k === c.date)?.[1] ?? data.range;
-      setShown({ data, breakdowns: c.breakdowns, rangeLabel });
+      setShown({ data, breakdowns, rangeLabel });
       setSort(null);
     } catch (e) {
       setError((e as Error).message);
@@ -303,8 +306,10 @@ export default function ResultsClient() {
             <div className="panel" style={{ opacity: loading ? 0.5 : 1 }}>
               <header>
                 <h2>{shown.rangeLabel}</h2>
-                <span className="muted" style={{ fontSize: 13.5 }}>{shown.data.rows.length} row{shown.data.rows.length === 1 ? "" : "s"}</span>
+                <span className="muted" style={{ fontSize: 13.5 }}>{shown.data.truncated ? "First " : ""}{shown.data.rows.length} row{shown.data.rows.length === 1 ? "" : "s"}</span>
               </header>
+              {zoneNote(shown.data.timezone) && <p className="hint" style={{ marginTop: 0 }}>{zoneNote(shown.data.timezone)}</p>}
+              {(shown.data.notes ?? []).map((n) => <div key={n} className="msg warning">{n}</div>)}
               {shown.data.rows.length === 0 ? (
                 <p className="muted">No results in this date range.</p>
               ) : (

@@ -14,7 +14,9 @@ import readline from "node:readline/promises";
 import { config } from "@/lib/config";
 import { checkReview, resetFailed, runBatch } from "@/lib/engine/launcher";
 import { autoGroup, buildPreview } from "@/lib/engine/preview";
-import { clientFor, pacerFor } from "@/lib/meta/factory";
+import { clientFor, pacerFor, useBackgroundClients } from "@/lib/meta/factory";
+
+useBackgroundClients();
 import { realClock } from "@/lib/meta/pacer";
 import { batchView, updateSettings } from "@/lib/service";
 import { connectPractice } from "@/lib/meta/connect";

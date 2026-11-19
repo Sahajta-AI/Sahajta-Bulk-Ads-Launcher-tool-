@@ -40,6 +40,34 @@
 .bulkTable td, .bulkTable th { font-size: 13px; padding: 6px; white-space: nowrap; }
 .rowError td { background: var(--err-bg); }
 
+/* Date and time boxes look like the other inputs. */
+.form input[type=time], .form input[type=datetime-local] { font: inherit; font-size: 14.5px; height: 40px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #fff; color: var(--ink); width: 100%; }
+.subBox { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+.subBox .row { margin-bottom: 8px; }
+
+/* Delivery table, the plan's JSON editor */
+.delivery { margin-top: 12px; }
+.smallTable td, .smallTable th { font-size: 13px; padding: 6px; }
+.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px !important; line-height: 1.45; }
+
+/* Ads inside an ad set */
+.ads { margin-top: 12px; padding-left: 12px; border-left: 2px solid var(--line); }
+.ad { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.ad:last-child { border-bottom: none; }
+.adName { font-weight: 600; font-size: 14px; word-break: break-word; }
+.adText { font-size: 13.5px; color: var(--ink-soft); margin-top: 3px; word-break: break-word; }
+.idLine { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.copyId { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.copyId code { font-size: 12px; user-select: all; word-break: break-all; }
+.copyId button { font-size: 12px; }
+.tick { width: 18px; height: 18px; accent-color: var(--primary); flex: none; }
+
+/* Post finder */
+.postList { background: #fff; border: 1px solid var(--line); border-radius: 8px; max-height: 320px; overflow: auto; }
+.postRow { display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.postRow:last-child { border-bottom: none; }
+.postRow > :first-child { flex: 1; min-width: 200px; }
+
 @media (max-width: 760px) {
   .kvSmall { grid-template-columns: 1fr; gap: 0; }
   .kvSmall dd { margin-bottom: 6px; }

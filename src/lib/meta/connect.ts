@@ -5,8 +5,9 @@ import { HttpError } from "../httperror";
 import { defaultPreset, isMock, seedDefaults } from "../setup";
 import { cacheDelete, cacheGet, cacheSet, getAccount } from "../store";
 import { MetaClient } from "./client";
-import { MetaError } from "./errors";
-import { mockMeta } from "./factory";
+import { MetaError, RateLimitedError, metaSaid, mustSurface } from "./errors";
+import { DEFAULT_UTM } from "../engine/naming";
+import { defaultMaxWaitMs, mockMeta, pacerFor, sharedDeadline } from "./factory";
 
 // Connect Meta from inside the app, so the person who uses the launcher can do it alone:
 //   Settings → Connect Meta → Facebook login (they tick the ad account, Page, Instagram)
@@ -46,8 +47,29 @@ function graph(): Graph {
   return { fetch, base: config.metaGraphUrl, version: config.metaApiVersion, appId: config.metaAppId, appSecret: config.metaAppSecret };
 }
 
-function clientWith(g: Graph, token: string) {
-  return new MetaClient({ token, accountId: "act_0", version: g.version, baseUrl: g.base, appSecret: isMock() ? undefined : g.appSecret, fetch: g.fetch });
+/**
+ * A client for Connect Meta. Someone is waiting on the Settings page, so it answers within seconds
+ * when Meta limits calls (maxWaitMs). Calls about an ad account the launcher already knows share
+ * that account's pacing (the same rate_state row as launches and pages).
+ */
+function clientWith(g: Graph, token: string, adAccountId?: string) {
+  const known = adAccountId ? (db().prepare("SELECT id FROM ad_accounts WHERE meta_account_id = ?").get(adAccountId) as { id: number } | undefined) : undefined;
+  return new MetaClient({
+    token,
+    accountId: adAccountId || "act_0",
+    version: g.version,
+    baseUrl: g.base,
+    appSecret: isMock() ? undefined : g.appSecret,
+    fetch: g.fetch,
+    pacer: known ? pacerFor(known.id) : undefined,
+    maxWaitMs: defaultMaxWaitMs(),
+    deadline: sharedDeadline(),
+  });
+}
+
+/** For `.catch` fallbacks: Meta limiting calls or a dead login must reach the person, never become "nothing". */
+function surface(e: unknown) {
+  if (mustSurface(e)) throw e;
 }
 
 export function redirectUri() {
@@ -95,6 +117,8 @@ export async function inspect(token: string): Promise<TokenInfo> {
   try {
     me = await clientWith(g, token).get<{ id: string; name?: string }>("me", { fields: "id,name" });
   } catch (e) {
+    // Meta limiting calls says nothing about the token: pass the plain "try again after…" message on.
+    if (e instanceof RateLimitedError || (e instanceof MetaError && e.isThrottle)) throw e;
     const why = e instanceof MetaError && e.code === 190 ? "it may be expired, cut short when copied, or made for another app" : e instanceof Error ? e.message : String(e);
     throw new HttpError(400, `Meta did not accept this token: ${why}.`);
   }
@@ -167,8 +191,14 @@ export async function listAssets(email: string): Promise<MetaAssets> {
   // A Page's linked Instagram account needs more permissions than the Page list; without them, list the Pages alone.
   const pages = await client
     .getAll<PageRow>("me/accounts", { fields: "id,name,picture{url},instagram_business_account{id,username}" })
-    .catch(() => client.getAll<PageRow>("me/accounts", { fields: "id,name,picture{url}" }))
-    .catch(() => client.getAll<PageRow>("me/accounts", { fields: "id,name" }));
+    .catch((e: unknown) => {
+      surface(e);
+      return client.getAll<PageRow>("me/accounts", { fields: "id,name,picture{url}" });
+    })
+    .catch((e: unknown) => {
+      surface(e);
+      return client.getAll<PageRow>("me/accounts", { fields: "id,name" });
+    });
   return {
     who: t.who,
     expiresAt: t.expiresAt,
@@ -179,16 +209,28 @@ export async function listAssets(email: string): Promise<MetaAssets> {
 }
 
 /** Instagram accounts the ad account can advertise with (allowed), plus those only linked to
- *  the Pages (not allowed until someone assigns them to the ad account in Business settings). */
+ *  the Pages (not allowed until someone assigns them to the ad account in Business settings).
+ *  If Meta doesn't give the ad account's list, say so: guessing "not allowed" would refuse a
+ *  choice that may be fine. */
 export async function listInstagram(email: string, adAccountId: string): Promise<InstagramChoice[]> {
   const t = workingToken(email);
   if (!t) throw new HttpError(409, "Click Connect Meta first.");
-  const client = clientWith(graph(), t.token);
+  const client = clientWith(graph(), t.token, adAccountId);
   type IgRow = { id: string; username: string; profile_pic?: string };
   const fromAccount = await client
     .getAll<IgRow>(`${adAccountId}/instagram_accounts`, { fields: "id,username,profile_pic" })
-    .catch(() => client.getAll<IgRow>(`${adAccountId}/instagram_accounts`, { fields: "id,username" }))
-    .catch(() => [] as IgRow[]);
+    .catch((e: unknown) => {
+      surface(e);
+      // Without the picture field (some logins may not read it).
+      return client.getAll<IgRow>(`${adAccountId}/instagram_accounts`, { fields: "id,username" });
+    })
+    .catch((e: unknown) => {
+      surface(e);
+      throw new HttpError(
+        502,
+        `Couldn't read from Meta which Instagram accounts this ad account may use, so the launcher can't tell which ones are allowed.${e instanceof MetaError ? metaSaid(e) || ` (${e.message})` : ` (${e instanceof Error ? e.message : String(e)})`} Try again in a minute, or pick "None (use the Facebook Page)".`,
+      );
+    });
   const fromPages = (await listAssets(email)).pages.map((p) => p.instagram).filter((i): i is { id: string; username: string } => !!i);
   const out: InstagramChoice[] = fromAccount.map((i) => ({ id: i.id, username: i.username, pictureUrl: i.profile_pic ?? null, link: igLink(i.username), allowed: true }));
   for (const i of fromPages) if (!out.some((o) => o.id === i.id)) out.push({ id: i.id, username: i.username, pictureUrl: null, link: igLink(i.username), allowed: false });
@@ -197,9 +239,9 @@ export async function listInstagram(email: string, adAccountId: string): Promise
 
 function copyTemplates(from: number, to: number) {
   const d = db();
-  d.prepare("INSERT INTO copy_templates (ad_account_id, name, primary_texts, headlines, description, cta, link_url, utm_template) SELECT ?, name, primary_texts, headlines, description, cta, link_url, utm_template FROM copy_templates WHERE ad_account_id = ?").run(to, from);
+  d.prepare("INSERT INTO copy_templates (ad_account_id, name, primary_texts, headlines, description, cta, link_url, utm_template, display_link, lead_form_id) SELECT ?, name, primary_texts, headlines, description, cta, link_url, utm_template, display_link, lead_form_id FROM copy_templates WHERE ad_account_id = ?").run(to, from);
   d.prepare("INSERT INTO naming_templates (ad_account_id, name, kind, pattern, is_default) SELECT ?, name, kind, pattern, is_default FROM naming_templates WHERE ad_account_id = ?").run(to, from);
-  d.prepare("INSERT INTO settings_presets (ad_account_id, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, is_default) SELECT ?, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, is_default FROM settings_presets WHERE ad_account_id = ?").run(to, from);
+  d.prepare("INSERT INTO settings_presets (ad_account_id, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, is_default) SELECT ?, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, is_default FROM settings_presets WHERE ad_account_id = ?").run(to, from);
   d.prepare("INSERT INTO campaign_templates (ad_account_id, name, objective, special_ad_categories) SELECT ?, name, objective, special_ad_categories FROM campaign_templates WHERE ad_account_id = ?").run(to, from);
 }
 
@@ -250,7 +292,7 @@ export async function selectAssets(email: string, sel: { adAccountId: string; pa
         "Sahajta Estates",
         "LEARN_MORE",
         "https://sahajta.com",
-        "utm_source=meta&utm_medium=paid&utm_campaign={campaign}&utm_content={creative}",
+        DEFAULT_UTM,
       );
     }
     return id;

@@ -21,7 +21,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [
     Google({
       authorization: {
-        params: { scope: `openid email profile ${DRIVE_SCOPE}`, access_type: "offline", prompt: "consent", include_granted_scopes: "true" },
+        params: { scope: `openid email profile ${DRIVE_SCOPE} https://www.googleapis.com/auth/gmail.send`, access_type: "offline", prompt: "consent", include_granted_scopes: "true" },
       },
     }),
   ],
