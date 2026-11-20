@@ -8,7 +8,7 @@ import type { Check, CopyOverride, Preset } from "@/lib/types";
 import type { LastUsed, Templates } from "../../client-api";
 import { ist } from "../../manage/util";
 
-type CopyLike = Pick<Templates["copy"][number], "primaryTexts" | "headlines" | "description" | "cta" | "linkUrl" | "utmTemplate" | "displayLink" | "leadFormId">;
+type CopyLike = Pick<Templates["copy"][number], "primaryTexts" | "headlines" | "descriptions" | "cta" | "linkUrl" | "utmTemplate" | "displayLink" | "leadFormId">;
 type PresetTpl = Templates["presets"][number];
 type ViewAd = Pick<BatchView["ads"][number], "id" | "effectiveStatus" | "metaAdId" | "reviewIssues">;
 type Checks = Pick<BatchView["preview"], "batchChecks" | "ads">;
@@ -18,7 +18,7 @@ const str = (v: string | null | undefined) => v ?? "";
 /** The copy template was edited in Settings after the batch took its copy of it. */
 export function copyStale(tpl: CopyLike | undefined, copy: CopyLike | undefined): boolean {
   if (!tpl || !copy) return false;
-  const pick = (c: CopyLike) => [c.primaryTexts, c.headlines, str(c.description), str(c.cta), str(c.linkUrl), str(c.utmTemplate), str(c.displayLink), str(c.leadFormId)];
+  const pick = (c: CopyLike) => [c.primaryTexts, c.headlines, c.descriptions ?? [], str(c.cta), str(c.linkUrl), str(c.utmTemplate), str(c.displayLink), str(c.leadFormId)];
   return JSON.stringify(pick(tpl)) !== JSON.stringify(pick(copy));
 }
 

@@ -3,6 +3,7 @@ import type { Clock } from "../meta/pacer";
 import { uploadImage, uploadVideo, videoStatus, videoThumbnail } from "../meta/upload";
 import { sha256File } from "../engine/media";
 import { CTA_TYPES } from "./cta";
+import { descriptionsIn, tooManyDescriptions } from "../descriptions";
 
 // Existing ads: read them, and change their name, status, texts, link, button or file.
 // Changing anything but the name or status means a new creative (Meta can't edit a creative),
@@ -13,6 +14,9 @@ export interface AdEditSpec {
   status?: "PAUSED" | "ACTIVE";
   primary_texts?: string[];
   headlines?: string[];
+  /** Up to 5. [] removes them. */
+  descriptions?: string[];
+  /** The old single description (before 20 Nov 2026); same as descriptions: [it]. */
   description?: string;
   link_url?: string;
   cta?: string;
@@ -33,7 +37,7 @@ interface CreativeRow {
   effective_instagram_media_id?: string;
   source_instagram_media_id?: string;
   object_story_spec?: Record<string, unknown> & { link_data?: Record<string, unknown>; video_data?: Record<string, unknown> };
-  asset_feed_spec?: Record<string, unknown> & { bodies?: { text: string; adlabels?: unknown }[]; titles?: { text: string; adlabels?: unknown }[]; descriptions?: { text: string }[]; link_urls?: Record<string, unknown>[]; call_to_action_types?: string[]; images?: unknown[]; videos?: unknown[] };
+  asset_feed_spec?: Record<string, unknown> & { bodies?: { text: string; adlabels?: unknown }[]; titles?: { text: string; adlabels?: unknown }[]; descriptions?: { text: string; adlabels?: unknown }[]; link_urls?: Record<string, unknown>[]; call_to_action_types?: string[]; images?: unknown[]; videos?: unknown[] };
   url_tags?: string;
   degrees_of_freedom_spec?: Record<string, unknown>;
   contextual_multi_ads?: Record<string, unknown>;
@@ -102,7 +106,8 @@ export function describeAdEdit(e: AdEditSpec): string[] {
   if (e.name) out.push(`name → "${e.name}"`);
   if (e.primary_texts) out.push(`primary text${e.primary_texts.length > 1 ? "s" : ""} → ${e.primary_texts.map((t) => `"${t.slice(0, 60)}${t.length > 60 ? "…" : ""}"`).join(", ")}`);
   if (e.headlines) out.push(`headline${e.headlines.length > 1 ? "s" : ""} → ${e.headlines.map((t) => `"${t}"`).join(", ")}`);
-  if (e.description !== undefined) out.push(`description → "${e.description}"`);
+  const d = descriptionsIn(e);
+  if (d !== undefined) out.push(d.length ? `description${d.length > 1 ? "s" : ""} → ${d.map((t) => `"${t}"`).join(", ")}` : "descriptions → none");
   if (e.link_url) out.push(`link → ${e.link_url}`);
   if (e.display_link !== undefined) out.push(`display link → ${e.display_link || "none"}`);
   if (e.cta) out.push(`button → ${e.cta.replace(/_/g, " ").toLowerCase()}`);
@@ -116,6 +121,8 @@ export function describeAdEdit(e: AdEditSpec): string[] {
 export function adEditProblems(e: AdEditSpec): string[] {
   const out: string[] = [];
   if ((e.primary_texts?.length ?? 0) > 5 || (e.headlines?.length ?? 0) > 5) out.push("up to 5 primary texts and 5 headlines.");
+  const d = descriptionsIn(e);
+  if (tooManyDescriptions(d)) out.push(tooManyDescriptions(d).replace(/^Up/, "up"));
   if (e.cta && !CTA_TYPES.includes(e.cta)) out.push(`unknown button ${e.cta}.`);
   if (e.link_url && !/^https?:\/\//i.test(e.link_url)) out.push(`the link must start with https://.`);
   return out;
@@ -124,21 +131,36 @@ export function adEditProblems(e: AdEditSpec): string[] {
 /**
  * Meta keeps one primary text and one headline on an ad made without text options (no asset_feed_spec):
  * several can't be put on it, and silently keeping the first would not be what the summary promised.
+ * A carousel has one primary text, and a headline and a description on each card (card N gets N).
  */
-export function textOptionsProblem(adName: string, hasTextOptions: boolean, e: AdEditSpec): string | null {
+export function textOptionsProblem(adName: string, hasTextOptions: boolean, e: AdEditSpec, carousel = false): string | null {
   const texts = e.primary_texts?.length ?? 0;
   const heads = e.headlines?.length ?? 0;
-  if ((texts <= 1 && heads <= 1) || hasTextOptions) return null;
-  const what = [texts > 1 ? `${texts} primary texts` : "", heads > 1 ? `${heads} headlines` : ""].filter(Boolean).join(" and ");
-  return `"${adName}" was made with one primary text and one headline (no text options), so Meta can't take ${what} on it. Give one of each, or make a new ad with several (a launch with several texts makes text options).`;
+  const descs = descriptionsIn(e)?.length ?? 0;
+  if (carousel && !hasTextOptions) return texts > 1 ? `"${adName}" is a carousel: it has one primary text (each card has its own headline and description). Give one primary text.` : null;
+  if ((texts <= 1 && heads <= 1 && descs <= 1) || hasTextOptions) return null;
+  const list = [texts > 1 ? `${texts} primary texts` : "", heads > 1 ? `${heads} headlines` : "", descs > 1 ? `${descs} descriptions` : ""].filter(Boolean);
+  const what = list.length > 1 ? `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}` : list[0];
+  return `"${adName}" was made with one primary text, one headline and one description (no text options), so Meta can't take ${what} on it. Give one of each, or make a new ad with several (a launch with several texts makes text options).`;
 }
 
-const textChange = (e: AdEditSpec) => e.primary_texts || e.headlines || e.description !== undefined || e.link_url || e.cta || e.display_link !== undefined || e.url_tags !== undefined || e.media_url;
+/**
+ * An ad with separate 9:16 and 4:5 files (placement rules) takes one description: Meta refuses several
+ * (100/1885878, checked 20 Nov 2026). Said at the check, never dropped quietly.
+ */
+export function pairDescriptionsProblem(adName: string, hasPlacementRules: boolean, e: AdEditSpec): string | null {
+  const n = descriptionsIn(e)?.length ?? 0;
+  if (n <= 1 || !hasPlacementRules) return null;
+  return `"${adName}" has separate 9:16 and 4:5 files, and Meta takes one description in such an ad (${n} given). Give one description.`;
+}
+
+const textChange = (e: AdEditSpec) => e.primary_texts || e.headlines || descriptionsIn(e) !== undefined || e.link_url || e.cta || e.display_link !== undefined || e.url_tags !== undefined || e.media_url;
 
 /** Apply the text changes to a creative's spec (both the link-ad and the asset-feed forms). */
 export function changedCreative(c: CreativeRow, e: AdEditSpec, media?: { imageHash?: string; videoId?: string; thumbnailUrl?: string }): Record<string, unknown> {
   const oss = structuredClone(c.object_story_spec ?? {}) as Record<string, unknown> & { link_data?: Record<string, unknown>; video_data?: Record<string, unknown> };
   const afs = c.asset_feed_spec ? (structuredClone(c.asset_feed_spec) as NonNullable<CreativeRow["asset_feed_spec"]>) : undefined;
+  const descs = descriptionsIn(e);
   const cta = (old: Record<string, unknown> | undefined) => {
     const prev = (old ?? {}) as { type?: string; value?: Record<string, unknown> };
     return { type: e.cta ?? prev.type ?? "LEARN_MORE", value: { ...(prev.value ?? {}), ...(e.link_url ? { link: e.link_url } : {}) } };
@@ -149,17 +171,17 @@ export function changedCreative(c: CreativeRow, e: AdEditSpec, media?: { imageHa
     if (e.primary_texts?.length) l.message = e.primary_texts[0];
     if (cards) {
       // A carousel: the headline, description, link and button are on each card, as the launcher made
-      // them (card N gets headline N, or the first one).
+      // them (card N gets headline N and description N, or the first one).
       l.child_attachments = cards.map((card, i) => ({
         ...card,
         ...(e.headlines?.length ? { name: e.headlines[i] ?? e.headlines[0] } : {}),
-        ...(e.description !== undefined ? { description: e.description || undefined } : {}),
+        ...(descs !== undefined ? { description: descs[i] ?? descs[0] ?? undefined } : {}),
         ...(e.link_url ? { link: e.link_url } : {}),
         ...(e.cta || e.link_url ? { call_to_action: cta(card.call_to_action as Record<string, unknown>) } : {}),
       }));
     } else {
       if (e.headlines?.length) l.name = e.headlines[0];
-      if (e.description !== undefined) l.description = e.description || undefined;
+      if (descs !== undefined) l.description = descs[0] || undefined;
     }
     if (e.link_url) l.link = e.link_url;
     if (e.display_link !== undefined) l.caption = e.display_link || undefined;
@@ -170,7 +192,7 @@ export function changedCreative(c: CreativeRow, e: AdEditSpec, media?: { imageHa
     const v = oss.video_data;
     if (e.primary_texts?.length) v.message = e.primary_texts[0];
     if (e.headlines?.length) v.title = e.headlines[0];
-    if (e.description !== undefined) v.link_description = e.description || undefined;
+    if (descs !== undefined) v.link_description = descs[0] || undefined;
     if (e.cta || e.link_url || e.display_link !== undefined) {
       // A video ad's display link is on its button (link_caption), as the launcher made it.
       const c = cta(v.call_to_action as Record<string, unknown>);
@@ -187,7 +209,7 @@ export function changedCreative(c: CreativeRow, e: AdEditSpec, media?: { imageHa
     const labelsOf = (list?: { adlabels?: unknown }[]) => list?.[0]?.adlabels;
     if (e.primary_texts?.length) { const l = labelsOf(afs.bodies); afs.bodies = e.primary_texts.map((text) => ({ text, ...(l ? { adlabels: l } : {}) })); }
     if (e.headlines?.length) { const l = labelsOf(afs.titles); afs.titles = e.headlines.map((text) => ({ text, ...(l ? { adlabels: l } : {}) })); }
-    if (e.description !== undefined) afs.descriptions = e.description ? [{ text: e.description }] : undefined;
+    if (descs !== undefined) { const l = labelsOf(afs.descriptions); afs.descriptions = descs.length ? descs.map((text) => ({ text, ...(l ? { adlabels: l } : {}) })) : undefined; }
     if (afs.link_urls && (e.link_url || e.display_link !== undefined)) afs.link_urls = afs.link_urls.map((u) => ({ ...u, ...(e.link_url ? { website_url: e.link_url } : {}), ...(e.display_link !== undefined ? { display_url: e.display_link || undefined } : {}) }));
     if (e.cta && afs.call_to_action_types) afs.call_to_action_types = [e.cta];
   }
@@ -226,7 +248,7 @@ export async function editAd(client: MetaClient, id: string, e: AdEditSpec, o: E
   if (e.name) patch.name = e.name;
   if (textChange(e)) {
     if (ad.fromPost) throw new Error(`"${ad.name}" runs an existing post, so its text, link and file can't change. Change the post itself, or make a new ad.`);
-    const several = textOptionsProblem(ad.name, !!ad.creative.asset_feed_spec, e);
+    const several = textOptionsProblem(ad.name, !!ad.creative.asset_feed_spec, e, Array.isArray(ad.creative.object_story_spec?.link_data?.child_attachments)) ?? pairDescriptionsProblem(ad.name, !!ad.creative.asset_feed_spec?.asset_customization_rules, e);
     if (several) throw new Error(several);
     let media: { imageHash?: string; videoId?: string; thumbnailUrl?: string } | undefined;
     if (e.media_url) {

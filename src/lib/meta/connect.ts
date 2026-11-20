@@ -239,7 +239,7 @@ export async function listInstagram(email: string, adAccountId: string): Promise
 
 function copyTemplates(from: number, to: number) {
   const d = db();
-  d.prepare("INSERT INTO copy_templates (ad_account_id, name, primary_texts, headlines, description, cta, link_url, utm_template, display_link, lead_form_id) SELECT ?, name, primary_texts, headlines, description, cta, link_url, utm_template, display_link, lead_form_id FROM copy_templates WHERE ad_account_id = ?").run(to, from);
+  d.prepare("INSERT INTO copy_templates (ad_account_id, name, primary_texts, headlines, description, descriptions, cta, link_url, utm_template, display_link, lead_form_id) SELECT ?, name, primary_texts, headlines, description, descriptions, cta, link_url, utm_template, display_link, lead_form_id FROM copy_templates WHERE ad_account_id = ?").run(to, from);
   d.prepare("INSERT INTO naming_templates (ad_account_id, name, kind, pattern, is_default) SELECT ?, name, kind, pattern, is_default FROM naming_templates WHERE ad_account_id = ?").run(to, from);
   d.prepare("INSERT INTO settings_presets (ad_account_id, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, is_default) SELECT ?, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, is_default FROM settings_presets WHERE ad_account_id = ?").run(to, from);
   d.prepare("INSERT INTO campaign_templates (ad_account_id, name, objective, special_ad_categories) SELECT ?, name, objective, special_ad_categories FROM campaign_templates WHERE ad_account_id = ?").run(to, from);
@@ -284,12 +284,13 @@ export async function selectAssets(email: string, sel: { adAccountId: string; pa
       .run(page.id, page.name, ig?.id ?? "", ig?.username ?? "", id, preset.id);
     if (isMock() && !d.prepare("SELECT 1 FROM copy_templates WHERE ad_account_id = ?").get(id)) {
       // Practice mode: one example copy template so the flow can be tried end to end.
-      d.prepare("INSERT INTO copy_templates (ad_account_id, name, primary_texts, headlines, description, cta, link_url, utm_template) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(
+      d.prepare("INSERT INTO copy_templates (ad_account_id, name, primary_texts, headlines, description, descriptions, cta, link_url, utm_template) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
         id,
         "Site-visit copy (example)",
         JSON.stringify(["Book a free site visit this weekend.", "Plots from 20 lakh, ready to register.", "See the layout before you decide."]),
         JSON.stringify(["Free site visit", "Plots from 20L", "See the layout"]),
         "Sahajta Estates",
+        JSON.stringify(["Sahajta Estates"]),
         "LEARN_MORE",
         "https://sahajta.com",
         DEFAULT_UTM,

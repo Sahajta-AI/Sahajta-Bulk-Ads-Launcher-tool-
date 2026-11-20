@@ -28,6 +28,7 @@ import { timeMs, zonedTime } from "./time";
 import { adCopy, attemptsOf, batchCopy, batchPreset, cacheDelete, cacheGet, cacheSet, getAccount, getAds, getBatchByKey, logEvent, updateAd, updateBatch } from "./store";
 import type { BatchRow, Copy, CopyOverride, Preset } from "./types";
 import { HttpError } from "./httperror";
+import { descriptionsIn, tooManyDescriptions, withDescriptions } from "./descriptions";
 import { goLiveNote } from "./alerts";
 
 // Everything the web app and Claude (through the API) can do. Routes stay thin.
@@ -161,10 +162,19 @@ async function findAdsetByText(q: string): Promise<{ campaign: CampaignInfo; ads
 
 // ---------- Templates ----------
 
-interface CopyRow { id: number; name: string; primary_texts: string; headlines: string; description: string; cta: string; link_url: string; utm_template: string; display_link?: string; lead_form_id?: string }
+interface CopyRow { id: number; name: string; primary_texts: string; headlines: string; description: string; descriptions?: string; cta: string; link_url: string; utm_template: string; display_link?: string; lead_form_id?: string }
+
+/** The list (migration 9); a row with only the old single description (written directly, or by an older app version) gives that one. */
+function templateDescriptions(r: CopyRow): string[] {
+  const list = descriptionsIn({ descriptions: json<string[] | null>(r.descriptions ?? null, null) }) ?? [];
+  const one = descriptionsIn({ description: r.description }) ?? [];
+  // This version keeps description = the first of the list. When they differ, an older version (a
+  // rollback) changed the description alone after the list was saved: its change wins.
+  return (one[0] ?? "") === (list[0] ?? "") ? list : one;
+}
 
 export function copyFromRow(r: CopyRow): Copy & { id: number; name: string } {
-  return { id: r.id, name: r.name, primaryTexts: JSON.parse(r.primary_texts) as string[], headlines: JSON.parse(r.headlines) as string[], description: r.description, cta: r.cta, linkUrl: r.link_url, utmTemplate: r.utm_template, displayLink: r.display_link ?? "", leadFormId: r.lead_form_id ?? "" };
+  return { id: r.id, name: r.name, primaryTexts: JSON.parse(r.primary_texts) as string[], headlines: JSON.parse(r.headlines) as string[], descriptions: templateDescriptions(r), cta: r.cta, linkUrl: r.link_url, utmTemplate: r.utm_template, displayLink: r.display_link ?? "", leadFormId: r.lead_form_id ?? "" };
 }
 
 export function listTemplates() {
@@ -193,7 +203,8 @@ function nameTaken(table: "copy_templates" | "settings_presets", accId: number, 
  * Claude saves by name). `create`: the Settings "Add" form; a name already in use is refused, never
  * overwritten. When editing, a field left out keeps its saved value; "" or [] clears it.
  */
-export function saveCopyTemplate(t: Partial<Copy> & { id?: number; name?: string; create?: boolean }) {
+export function saveCopyTemplate(input: Partial<Copy> & { description?: string; id?: number; name?: string; create?: boolean }) {
+  const t = withDescriptions(input);
   const acc = account();
   const name = t.name?.trim();
   let id = t.id ? Number(t.id) : undefined;
@@ -208,25 +219,27 @@ export function saveCopyTemplate(t: Partial<Copy> & { id?: number; name?: string
   const texts = t.primaryTexts === undefined ? undefined : (t.primaryTexts ?? []).map((x) => String(x).trim()).filter(Boolean);
   const heads = t.headlines === undefined ? undefined : (t.headlines ?? []).map((x) => String(x).trim()).filter(Boolean);
   if ((texts?.length ?? 0) > 5 || (heads?.length ?? 0) > 5) throw new HttpError(400, "Up to 5 primary texts and 5 headlines.");
+  const descs = t.descriptions;
+  if (tooManyDescriptions(descs)) throw new HttpError(400, tooManyDescriptions(descs));
   if (t.cta && !CTA_TYPES.includes(t.cta)) throw new HttpError(400, `Unknown call-to-action ${t.cta}. Use one of: ${CTA_TYPES.join(", ")}.`);
   if (t.linkUrl?.trim() && !/^https?:\/\//i.test(t.linkUrl.trim())) throw new HttpError(400, "The link must start with https://.");
   const opt = (v: string | undefined) => (v === undefined ? null : String(v ?? "").trim());
   if (cur) {
     db()
       .prepare(
-        `UPDATE copy_templates SET name = COALESCE(?, name), primary_texts = COALESCE(?, primary_texts), headlines = COALESCE(?, headlines), description = COALESCE(?, description),
+        `UPDATE copy_templates SET name = COALESCE(?, name), primary_texts = COALESCE(?, primary_texts), headlines = COALESCE(?, headlines), description = COALESCE(?, description), descriptions = COALESCE(?, descriptions),
            cta = COALESCE(?, cta), link_url = COALESCE(?, link_url), utm_template = COALESCE(?, utm_template), display_link = COALESCE(?, display_link), lead_form_id = COALESCE(?, lead_form_id),
            updated_at = datetime('now') WHERE id = ? AND ad_account_id = ?`,
       )
-      .run(name ?? null, texts ? JSON.stringify(texts) : null, heads ? JSON.stringify(heads) : null, t.description === undefined ? null : (t.description ?? ""), t.cta === undefined ? null : t.cta || "LEARN_MORE", opt(t.linkUrl), opt(t.utmTemplate), opt(t.displayLink), opt(t.leadFormId), cur.id, acc.id);
+      .run(name ?? null, texts ? JSON.stringify(texts) : null, heads ? JSON.stringify(heads) : null, descs === undefined ? null : (descs[0] ?? ""), descs === undefined ? null : JSON.stringify(descs), t.cta === undefined ? null : t.cta || "LEARN_MORE", opt(t.linkUrl), opt(t.utmTemplate), opt(t.displayLink), opt(t.leadFormId), cur.id, acc.id);
     return cur.id;
   }
   // New templates get UTM tags by default, so analytics and the CRM show which ad brought each lead.
   const utm = t.utmTemplate === undefined ? DEFAULT_UTM : (t.utmTemplate ?? "").trim();
   return Number(
     db()
-      .prepare("INSERT INTO copy_templates (name, primary_texts, headlines, description, cta, link_url, utm_template, display_link, lead_form_id, ad_account_id) VALUES (?,?,?,?,?,?,?,?,?,?)")
-      .run(name, JSON.stringify(texts ?? []), JSON.stringify(heads ?? []), t.description ?? "", t.cta || "LEARN_MORE", (t.linkUrl ?? "").trim(), utm, (t.displayLink ?? "").trim(), (t.leadFormId ?? "").trim(), acc.id).lastInsertRowid,
+      .prepare("INSERT INTO copy_templates (name, primary_texts, headlines, description, descriptions, cta, link_url, utm_template, display_link, lead_form_id, ad_account_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+      .run(name, JSON.stringify(texts ?? []), JSON.stringify(heads ?? []), descs?.[0] ?? "", JSON.stringify(descs ?? []), t.cta || "LEARN_MORE", (t.linkUrl ?? "").trim(), utm, (t.displayLink ?? "").trim(), (t.leadFormId ?? "").trim(), acc.id).lastInsertRowid,
   );
 }
 
@@ -571,7 +584,12 @@ function changeAfterLaunch(b: BatchRow, accId: number, s: BatchSettings): string
     throw new HttpError(409, `This batch has been launched, so ${other.map(([k]) => k).join(", ")} can't change. Only the settings preset and the copy template can change, for the ads not created yet; then press "Retry failed".`);
   }
   const patch = templatePatch(accId, s);
-  const changed = Object.entries(patch).filter(([k, v]) => (b as unknown as Record<string, unknown>)[k] !== v);
+  // The copy compared as copies: one saved before 20 Nov has the old single description, the template's now
+  // has a list of one; the same text is no change.
+  const changed = Object.entries(patch).filter(([k, v]) => {
+    const now = (b as unknown as Record<string, unknown>)[k];
+    return k === "copy" ? !sameCopy(String(v), now as string | null) : now !== v;
+  });
   if (!changed.length) return null;
   updateBatch(b.id, patch);
   const what = [patch.preset ? `settings preset "${json<Preset>(String(patch.preset), {} as Preset).name}"` : "", patch.copy_template_id ? "copy template" : ""].filter(Boolean).join(" and ");
@@ -633,8 +651,9 @@ export function setAdCopyBy(key: string, rows: { ad: string | number; copy?: Cop
         if (hasCopy) {
           // The latest saved copy (an earlier row of this call may have changed the same ad).
           const now = db().prepare("SELECT copy_override FROM ads WHERE id = ?").pluck().get(ad.id) as string | null;
-          copy = mergeCopy(json<CopyOverride>(now, {}), r.copy!);
+          copy = mergeCopy(withDescriptions(json<CopyOverride>(now, {})), withDescriptions(r.copy!));
           if ((copy.primaryTexts?.length ?? 0) > 5 || (copy.headlines?.length ?? 0) > 5) throw new HttpError(400, `Ad ${ad.position}: up to 5 primary texts and 5 headlines.`);
+          if (tooManyDescriptions(copy.descriptions)) throw new HttpError(400, `Ad ${ad.position}: ${tooManyDescriptions(copy.descriptions)}`);
           if (copy.cta && !CTA_TYPES.includes(copy.cta)) throw new HttpError(400, `Ad ${ad.position}: unknown call-to-action ${copy.cta}.`);
         }
         updateAdOverride(key, ad.id, { copy, angle: r.angle });
@@ -767,7 +786,8 @@ function sameCopy(a: string | null | undefined, b: string | null | undefined): b
     v && typeof v === "object" && !Array.isArray(v)
       ? Object.keys(v).filter((k) => !empty((v as Record<string, unknown>)[k])).sort().map((k) => [k, canon((v as Record<string, unknown>)[k])])
       : v;
-  return JSON.stringify(canon(json<unknown>(a ?? null, {}))) === JSON.stringify(canon(json<unknown>(b ?? null, {})));
+  const read = (v: string | null | undefined) => withDescriptions(json<Record<string, unknown>>(v ?? null, {}));
+  return JSON.stringify(canon(read(a))) === JSON.stringify(canon(read(b)));
 }
 
 export function updateAdOverride(key: string, adId: number, o: { copy?: CopyOverride; angle?: string | null }) {
@@ -783,7 +803,7 @@ export function updateAdOverride(key: string, adId: number, o: { copy?: CopyOver
   const patch: Record<string, string | null> = {};
   if (o.copy !== undefined && o.copy !== null) {
     const clean: CopyOverride = {};
-    for (const [k, v] of Object.entries(o.copy)) {
+    for (const [k, v] of Object.entries(withDescriptions(o.copy))) {
       if (k === "enhancements" && v && typeof v === "object") {
         const unknown = Object.keys(v).filter((f) => !FEATURES.some((x) => x.key === f));
         if (unknown.length) throw new HttpError(400, `Unknown enhancement${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}.`);
@@ -796,6 +816,7 @@ export function updateAdOverride(key: string, adId: number, o: { copy?: CopyOver
       else if (Array.isArray(v) ? v.some((x) => String(x).trim()) : typeof v === "string" && v.trim()) (clean as Record<string, unknown>)[k] = v;
     }
     if ((clean.primaryTexts?.length ?? 0) > 5 || (clean.headlines?.length ?? 0) > 5) throw new HttpError(400, "Up to 5 primary texts and 5 headlines.");
+    if (tooManyDescriptions(clean.descriptions)) throw new HttpError(400, tooManyDescriptions(clean.descriptions));
     if (clean.cta && !CTA_TYPES.includes(clean.cta)) throw new HttpError(400, `Unknown call-to-action ${clean.cta}.`);
     if (clean.linkUrl && !/^https?:\/\//i.test(clean.linkUrl)) throw new HttpError(400, "The link must start with https://.");
     const next = Object.keys(clean).length ? JSON.stringify(clean) : null;

@@ -196,10 +196,16 @@ describe("B5 the start-of-run check", () => {
   it("an expired login at the start marks the ads failed with 'Reconnect Meta' instead of throwing Meta's words", async () => {
     const { batchId, deps } = await batch();
     const expired = { message: "Error validating access token: Session has expired.", type: "OAuthException", code: 190, error_subcode: 463 };
-    for (let i = 0; i < 6; i++) mock.inject({ match: (m, p) => m === "GET" && /^act_1001\/(ads|adsets|adcreatives)$/.test(p), kind: "error", error: expired });
+    // An expired login fails every call: the run's first call (its check for earlier work) stops the launch,
+    // every ad says "Reconnect Meta".
+    for (let i = 0; i < 50; i++) mock.inject({ match: () => true, kind: "error", error: expired });
+    const before = mock.calls.length;
     expect(await runBatch(batchId, deps)).toEqual({ done: 0, failed: 9 });
-    expect(getAds(batchId)[0].error).toMatch(/Reconnect Meta/);
+    expect(getAds(batchId).every((a) => /Reconnect Meta/.test(a.error ?? ""))).toBe(true);
     expect(getBatch(batchId)!.status).toBe("failed");
+    // It stopped at the first refusal: one call, nothing made.
+    expect(mock.calls.slice(before).map((c) => `${c.method} ${c.path}`)).toEqual(["GET act_1001/ads"]);
+    expect(mock.of("creative").length + mock.of("ad").length).toBe(0);
   }, 60_000);
 });
 

@@ -1,5 +1,6 @@
 import { db, json } from "./db";
 import type { AdAccountRow, AdRow, AssetRow, BatchRow, Check, Copy, CopyOverride, Preset } from "./types";
+import { descriptionsIn, withDescriptions } from "./descriptions";
 
 // Small data-access helpers shared by the web app, the worker and the CLI.
 
@@ -51,13 +52,19 @@ export function logEvent(batchId: number, adId: number | null, level: "info" | "
 }
 
 export function batchCopy(b: BatchRow): Copy {
-  return json<Copy>(b.copy, { primaryTexts: [], headlines: [], description: "", cta: "LEARN_MORE", linkUrl: "", utmTemplate: "" });
+  const c = json<Copy>(b.copy, { primaryTexts: [], headlines: [], descriptions: [], cta: "LEARN_MORE", linkUrl: "", utmTemplate: "" });
+  return { ...withDescriptions(c), descriptions: descriptionsIn(c) ?? [] };
+}
+
+/** This ad's own copy changes (old ones may still have one `description`: lib/descriptions.ts). */
+export function adOverride(ad: Pick<AdRow, "copy_override">): CopyOverride {
+  return withDescriptions(json<CopyOverride>(ad.copy_override, {}));
 }
 
 /** The batch copy with this ad's overrides applied. Empty override fields mean "use the batch value". */
 export function adCopy(b: BatchRow, ad: AdRow): Copy {
   const base = batchCopy(b);
-  const o = json<CopyOverride>(ad.copy_override, {});
+  const o = adOverride(ad);
   const pick = <T>(v: T | undefined, d: T): T => {
     if (v === undefined || v === null) return d;
     if (Array.isArray(v) && v.filter((x) => String(x).trim()).length === 0) return d;
@@ -67,7 +74,7 @@ export function adCopy(b: BatchRow, ad: AdRow): Copy {
   return {
     primaryTexts: pick(o.primaryTexts, base.primaryTexts).filter((t) => t.trim()),
     headlines: pick(o.headlines, base.headlines).filter((t) => t.trim()),
-    description: pick(o.description, base.description),
+    descriptions: pick(o.descriptions, base.descriptions).filter((t) => t.trim()),
     cta: pick(o.cta, base.cta),
     linkUrl: pick(o.linkUrl, base.linkUrl),
     utmTemplate: pick(o.utmTemplate, base.utmTemplate),
@@ -79,7 +86,7 @@ export function adCopy(b: BatchRow, ad: AdRow): Copy {
 /** The batch's settings preset with this ad's own enhancements and multi-advertiser choice, if it has them. */
 export function adPreset(b: BatchRow, ad: AdRow): Preset {
   const base = batchPreset(b);
-  const o = json<CopyOverride>(ad.copy_override, {});
+  const o = adOverride(ad);
   return {
     ...base,
     ...(o.enhancements ? { enhancements: o.enhancements } : {}),
@@ -97,6 +104,30 @@ export function adChecks(ad: AdRow): Check[] {
 
 export function attemptsOf(ad: AdRow): Record<string, number> {
   return json<Record<string, number>>(ad.attempts, {});
+}
+
+/** Most recent creatives read to find one by name (pages of 100): Meta has no name filter for creatives. */
+export const CREATIVE_LOOKUP_MAX = 1000;
+/** The reads that takes at most: what the time estimate counts for it. */
+export const CREATIVE_LOOKUP_PAGES = CREATIVE_LOOKUP_MAX / 100;
+
+/**
+ * What a run looks up in Meta before creating anything, so nothing is made twice (an earlier run may have
+ * made it without the launcher knowing: a lost answer, a crash, a restored database).
+ *  - Ads by their [L:key] name: always (one read; Meta's name filter works for ads, and a found ad gives
+ *    its creative too). New ad sets per ad: the same, always.
+ *  - Creatives: Meta has no name filter for them, so this reads up to 1,000 recent creatives. Only when a
+ *    try of a creative without its ID is saved (the try is saved before the create is sent), or after a
+ *    database restore (deploy/restore.sh marks every unfinished ad "restored": its tries may be missing).
+ * The time estimate counts the same reads.
+ */
+export function lookupsNeeded(batch: Pick<BatchRow, "adset_mode">, ads: AdRow[]): { ads: boolean; creatives: boolean; adsets: boolean } {
+  const tried = (a: AdRow) => attemptsOf(a);
+  return {
+    ads: ads.length > 0,
+    creatives: ads.some((a) => !a.meta_creative_id && ((tried(a).restored ?? 0) > 0 || (tried(a).creative ?? 0) > (tried(a).creative_refused ?? 0))),
+    adsets: batch.adset_mode === "new_per_ad" && ads.length > 0,
+  };
 }
 
 export function cacheGet<T>(key: string): T | undefined {

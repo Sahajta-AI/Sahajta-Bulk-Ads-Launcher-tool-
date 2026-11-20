@@ -71,7 +71,7 @@ export function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; 
   const [name, setName] = useState(t.name ?? "");
   const [texts, setTexts] = useState(pad(t.primaryTexts));
   const [heads, setHeads] = useState(pad(t.headlines));
-  const [desc, setDesc] = useState(t.description ?? "");
+  const [descs, setDescs] = useState(pad(t.descriptions));
   const [cta, setCta] = useState(t.cta ?? "LEARN_MORE");
   const [link, setLink] = useState(t.linkUrl ?? "");
   const [utm, setUtm] = useState(t.utmTemplate ?? DEFAULT_UTM);
@@ -85,7 +85,7 @@ export function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; 
     setBusy(true);
     setError("");
     try {
-      await api("/api/templates", { method: "POST", body: copyBody({ id: t.id, name, texts, heads, desc, cta, link, utm, displayLink, leadFormId }) });
+      await api("/api/templates", { method: "POST", body: copyBody({ id: t.id, name, texts, heads, descs, cta, link, utm, displayLink, leadFormId }) });
       onSaved();
     } catch (e) {
       setError((e as Error).message);
@@ -115,7 +115,10 @@ export function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; 
               {x.length > 40 && <small style={{ color: "var(--warn)" }}>{x.length} characters; may be cut off</small>}
             </div>
           ))}
-          <label className="field"><span>Description</span><input value={desc} onChange={(e) => setDesc(e.target.value)} /></label>
+          <small>Descriptions (up to 5)</small>
+          {descs.map((x, i) => (
+            <input key={i} value={x} aria-label={`Description ${i + 1}`} onChange={(e) => setDescs(descs.map((y, j) => (j === i ? e.target.value : y)))} style={{ marginBottom: 2 }} />
+          ))}
           <label className="field"><span>Button</span>
             <select value={cta} onChange={(e) => setCta(e.target.value)}>{ctas.map((c) => <option key={c} value={c}>{c.replace(/_/g, " ").toLowerCase()}</option>)}</select>
           </label>
@@ -366,7 +369,7 @@ export default function SettingsClient({ status }: { status: Status }) {
             <header><h2>Copy templates</h2><button className="primary" style={{ marginLeft: "auto" }} onClick={() => setEditCopy({})}>Add a copy template</button></header>
             {tpl.copy.map((c) => (
               <div className="list-item" key={c.id}>
-                <div className="grow"><strong>{c.name}</strong><div><small>{c.primaryTexts.length} texts · {c.headlines.length} headlines · {c.cta.replace(/_/g, " ").toLowerCase()} → {c.linkUrl}</small></div></div>
+                <div className="grow"><strong>{c.name}</strong><div><small>{c.primaryTexts.length} texts · {c.headlines.length} headlines · {c.descriptions.length} descriptions · {c.cta.replace(/_/g, " ").toLowerCase()} → {c.linkUrl}</small></div></div>
                 <button onClick={() => setEditCopy(c)}>Edit</button>
                 <button onClick={() => setEditCopy({ ...c, id: undefined, name: `${c.name} (copy)` })}>Duplicate</button>
                 <button className="danger" onClick={() => confirm(`Delete the copy template "${c.name}"?`) && api(`/api/templates/copy/${c.id}`, { method: "DELETE" }).then(reload).catch((e: Error) => alert(e.message))}>Delete</button>

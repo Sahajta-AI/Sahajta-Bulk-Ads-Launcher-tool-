@@ -58,14 +58,14 @@ export function FailedCopyEditor({ ad, tpl, batchKey, busy, act, onClose }: { ad
   const filled = (a: string[]) => a.map((x) => x.trim()).filter(Boolean);
   const [texts, setTexts] = useState(pad(ad.copy.primaryTexts));
   const [heads, setHeads] = useState(pad(ad.copy.headlines));
-  const [desc, setDesc] = useState(ad.copy.description);
+  const [descs, setDescs] = useState(pad(ad.copy.descriptions));
   const [link, setLink] = useState(ad.copy.linkUrl);
   const [displayLink, setDisplayLink] = useState(ad.copy.displayLink ?? "");
   const [cta, setCta] = useState(ad.copy.cta);
   const [error, setError] = useState("");
 
   function save() {
-    const copy: CopyOverride = { ...(ad.override as CopyOverride), primaryTexts: filled(texts), headlines: filled(heads), description: desc, linkUrl: link.trim(), displayLink: displayLink.trim(), cta };
+    const copy: CopyOverride = { ...(ad.override as CopyOverride), primaryTexts: filled(texts), headlines: filled(heads), descriptions: filled(descs), linkUrl: link.trim(), displayLink: displayLink.trim(), cta };
     setError("");
     act(`copy-${ad.id}`, async () => {
       try {
@@ -93,10 +93,13 @@ export function FailedCopyEditor({ ad, tpl, batchKey, busy, act, onClose }: { ad
           {heads.map((x, i) => (
             <input key={i} value={x} aria-label={`Headline ${i + 1}`} onChange={(e) => setHeads(heads.map((y, j) => (j === i ? e.target.value : y)))} style={{ marginBottom: 4 }} />
           ))}
+          <small>Descriptions (up to 5)</small>
+          {descs.map((x, i) => (
+            <input key={i} value={x} aria-label={`Description ${i + 1}`} onChange={(e) => setDescs(descs.map((y, j) => (j === i ? e.target.value : y)))} style={{ marginBottom: 4 }} />
+          ))}
         </div>
       </div>
       <div className="row" style={{ marginTop: 8 }}>
-        <label><span>Description</span><input value={desc} onChange={(e) => setDesc(e.target.value)} /></label>
         <label><span>Landing page</span><input type="url" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://" /></label>
       </div>
       <div className="row" style={{ marginTop: 8 }}>

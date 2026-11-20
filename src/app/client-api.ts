@@ -18,7 +18,7 @@ export async function api<T>(url: string, opts: { method?: string; body?: unknow
 
 /** Copy templates, naming patterns and presets from /api/templates (Settings and the batch page). */
 export interface Templates {
-  copy: { id: number; name: string; primaryTexts: string[]; headlines: string[]; description: string; cta: string; linkUrl: string; utmTemplate: string; displayLink?: string; leadFormId?: string }[];
+  copy: { id: number; name: string; primaryTexts: string[]; headlines: string[]; descriptions: string[]; cta: string; linkUrl: string; utmTemplate: string; displayLink?: string; leadFormId?: string }[];
   naming: { id: number; name: string; kind: "ad" | "adset" | "campaign"; pattern: string; is_default: number }[];
   presets: { id: number; name: string; pageName: string; pageId: string; igName: string; igUserId: string; enhancementsOn: string[]; multiAdvertiser: boolean; isDefault: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string }[];
   tokens: { token: string; meaning: string }[];

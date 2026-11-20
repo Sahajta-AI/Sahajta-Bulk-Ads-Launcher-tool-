@@ -201,7 +201,7 @@ describe("Settings: 'Add a copy template' / 'Add a preset'", () => {
     // Exactly what Settings → "Add a copy template" posts (no id, every field of the empty form).
     // Probe fixed (round 2): built by the page's own helper, so it is what the "Add" form posts now
     // (create: true for a new one); Claude keeps saving by name.
-    const body = copyBody({ id: undefined, name: "site visit", texts: ["New text", "", "", "", ""], heads: ["", "", "", "", ""], desc: "", cta: "LEARN_MORE", link: "https://example.com/other", utm: "", displayLink: "", leadFormId: "" });
+    const body = copyBody({ id: undefined, name: "site visit", texts: ["New text", "", "", "", ""], heads: ["", "", "", "", ""], descs: ["", "", "", "", ""], cta: "LEARN_MORE", link: "https://example.com/other", utm: "", displayLink: "", leadFormId: "" });
     expect(() => saveCopyTemplate(body)).toThrow(/already called/);
     const row = db().prepare("SELECT link_url, lead_form_id FROM copy_templates WHERE id = ?").get(id) as { link_url: string; lead_form_id: string };
     expect(row).toEqual({ link_url: "https://example.com/visit", lead_form_id: "555" });

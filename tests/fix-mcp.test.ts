@@ -402,8 +402,8 @@ describe("T10 · saving a template or preset shows everything saved", () => {
     await batch();
     const { call } = await claude();
     const s = await call("save_copy_template", { name: "Echo", primary_texts: ["T1"], headlines: ["H1"], link_url: "https://example.com/v", display_link: "sahajta.com/v", lead_form_id: "4242", cta: "SIGN_UP" });
-    expect(s.text).toMatch(/^Created copy template "Echo" \(id \d+\): 1 primary text\(s\), 1 headline\(s\), SIGN_UP → https:\/\/example.com\/v\./);
-    expect(s.text).toMatch(/Display link: sahajta\.com\/v · Lead form: 4242/);
+    expect(s.text).toMatch(/^Created copy template "Echo" \(id \d+\): 1 primary text\(s\), 1 headline\(s\), 0 description\(s\), SIGN_UP → https:\/\/example.com\/v\./);
+    expect(s.text).toMatch(/Descriptions: none\nDisplay link: sahajta\.com\/v · Lead form: 4242/);
     expect(s.text).toMatch(/UTM tags: utm_source=facebook.* \(the default for new templates\)/);
     const e = await call("save_copy_template", { template: "echo", display_link: "" });
     expect(e.text).toMatch(/^Updated copy template "Echo"/);

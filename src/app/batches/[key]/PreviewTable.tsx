@@ -21,7 +21,7 @@ function Override({ ad, tpl, presetOn, presetMulti, batchKey, onDone }: { ad: Ad
   const o = (ad.override ?? {}) as CopyOverride;
   const [texts, setTexts] = useState(pad(o.primaryTexts ?? []));
   const [heads, setHeads] = useState(pad(o.headlines ?? []));
-  const [desc, setDesc] = useState(o.description ?? "");
+  const [descs, setDescs] = useState(pad(o.descriptions ?? []));
   const [link, setLink] = useState(o.linkUrl ?? "");
   const [displayLink, setDisplayLink] = useState(o.displayLink ?? "");
   const [leadFormId, setLeadFormId] = useState(o.leadFormId ?? "");
@@ -36,7 +36,7 @@ function Override({ ad, tpl, presetOn, presetMulti, batchKey, onDone }: { ad: Ad
   async function save(clear = false) {
     try {
       // Link tags and the carousel format are set elsewhere (sheet, Claude): keep them.
-      const copy: CopyOverride = { ...notEditedHere(o), primaryTexts: texts.filter((t) => t.trim()), headlines: heads.filter((t) => t.trim()), description: desc, linkUrl: link, displayLink, leadFormId, cta };
+      const copy: CopyOverride = { ...notEditedHere(o), primaryTexts: texts.filter((t) => t.trim()), headlines: heads.filter((t) => t.trim()), descriptions: descs.filter((t) => t.trim()), linkUrl: link, displayLink, leadFormId, cta };
       if (enhOwn) copy.enhancements = Object.fromEntries([...enh].map((k) => [k, "OPT_IN" as const]));
       if (multi !== "same") copy.multiAdvertiser = multi === "on";
       const body = clear ? { copy: {}, angle: "" } : { copy, angle };
@@ -61,8 +61,10 @@ function Override({ ad, tpl, presetOn, presetMulti, batchKey, onDone }: { ad: Ad
           {heads.map((t, i) => (
             <input key={i} value={t} placeholder={ad.copy.headlines[i] ?? ""} onChange={(e) => setHeads(heads.map((x, j) => (j === i ? e.target.value : x)))} style={{ marginBottom: 4 }} />
           ))}
-          <small>Description</small>
-          <input value={desc} placeholder={ad.copy.description} onChange={(e) => setDesc(e.target.value)} />
+          <small>Descriptions (up to 5)</small>
+          {descs.map((t, i) => (
+            <input key={i} value={t} placeholder={ad.copy.descriptions[i] ?? ""} onChange={(e) => setDescs(descs.map((x, j) => (j === i ? e.target.value : x)))} style={{ marginBottom: 4 }} />
+          ))}
           <small>Landing page</small>
           <input value={link} placeholder={ad.copy.linkUrl} onChange={(e) => setLink(e.target.value)} />
           <small>Display link (short link shown on the ad)</small>

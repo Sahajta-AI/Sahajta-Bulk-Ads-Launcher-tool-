@@ -145,7 +145,8 @@ describe("The fixes named in error messages work", () => {
   it("a Meta login that expired before the launch starts gives the plain 'Reconnect Meta' message, not Meta's raw words", async () => {
     const { batchId, deps } = await batch();
     const expired = { message: "Error validating access token: Session has expired on Tuesday, 17-Nov-26.", type: "OAuthException", code: 190, error_subcode: 463 };
-    for (let i = 0; i < 6; i++) mock.inject({ match: (m, p) => m === "GET" && /^act_1001\/(ads|adsets|adcreatives)$/.test(p), kind: "error", error: expired });
+    // An expired login fails every call (the run's first call, whichever it is).
+    for (let i = 0; i < 50; i++) mock.inject({ match: () => true, kind: "error", error: expired });
     const thrown = await runBatch(batchId, deps).then(() => null, (e: Error) => e.message);
     const shown = thrown ?? getAds(batchId)[0].error ?? "";
     expect(shown).toMatch(/Reconnect Meta/);

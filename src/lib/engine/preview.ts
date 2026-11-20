@@ -5,7 +5,7 @@ import { CTA_TYPES } from "../manage/cta";
 import { pacTextsLimited } from "../meta/creative";
 import { getMedia } from "../meta/upload";
 import { DEFAULT_CAP, WINDOW_MS, type PacerState } from "../meta/pacer";
-import { adChecks, adCopy, adPreset, batchPreset, getAdAssets, getAds, getAssets, getBatch, updateAd, updateBatch } from "../store";
+import { adChecks, adCopy, adOverride, adPreset, batchPreset, getAdAssets, getAds, getAssets, getBatch, CREATIVE_LOOKUP_PAGES, lookupsNeeded, updateAd, updateBatch } from "../store";
 import type { AdRow, AssetRow, BatchRow, Check } from "../types";
 import { estimateWork, timeLeft, type Estimate, type LaunchWork, type RateLimits } from "./estimate";
 import { formatLabel, groupFiles, slotOf } from "./grouping";
@@ -259,16 +259,20 @@ export function checkAd(batch: BatchRow, ad: AdRow, assets: AssetRow[]): Check[]
   }
 
   // Copy
-  if (assets.length > 1 && pacTextsLimited() && (copy.primaryTexts.length > 1 || copy.headlines.length > 1)) {
-    out.push({ level: "warning", code: "pac_one_text", message: "Meta doesn't accept several texts in an ad with separate vertical and feed files. Only the first primary text and headline will be used for this ad." });
+  if (assets.length > 1 && pacTextsLimited() && (copy.primaryTexts.length > 1 || copy.headlines.length > 1 || copy.descriptions.length > 1)) {
+    out.push({ level: "warning", code: "pac_one_text", message: "Meta doesn't accept several texts in an ad with separate vertical and feed files. Only the first primary text, headline and description will be used for this ad." });
+  }
+  if (assets.length > 1 && !isCarousel && copy.descriptions.length > 1) {
+    out.push({ level: "warning", code: "pair_one_description", message: `Meta takes one description in an ad with separate 9:16 and 4:5 files, so only the first is used: "${copy.descriptions[0]}". The other ${copy.descriptions.length - 1} are left out. An ad with one file (or a carousel) takes all of them.` });
   }
   if (!copy.primaryTexts.length) out.push({ level: "error", code: "no_text", message: "No primary text. Pick a copy template or add text to this ad." });
   if (!copy.headlines.length) out.push({ level: "warning", code: "no_headline", message: "No headline." });
   if (copy.primaryTexts.length > LIMITS.maxTexts) out.push({ level: "error", code: "too_many_texts", message: `${copy.primaryTexts.length} primary texts. Meta allows up to 5.` });
   if (copy.headlines.length > LIMITS.maxTexts) out.push({ level: "error", code: "too_many_texts", message: `${copy.headlines.length} headlines. Meta allows up to 5.` });
+  if (copy.descriptions.length > LIMITS.maxTexts) out.push({ level: "error", code: "too_many_texts", message: `${copy.descriptions.length} descriptions. Meta allows up to 5.` });
   textChecks("Primary text", copy.primaryTexts, LIMITS.primaryTextSoft, LIMITS.primaryTextHard, out);
   textChecks("Headline", copy.headlines, LIMITS.headlineSoft, LIMITS.headlineHard, out);
-  if (copy.description) textChecks("Description", [copy.description], LIMITS.descriptionSoft, LIMITS.descriptionHard, out);
+  textChecks("Description", copy.descriptions, LIMITS.descriptionSoft, LIMITS.descriptionHard, out);
   if (!copy.linkUrl) out.push({ level: "error", code: "no_link", message: "No landing page URL." });
   else if (!/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(copy.linkUrl)) out.push({ level: "error", code: "bad_link", message: `The landing page "${copy.linkUrl}" is not a full web address. It must start with https://` });
   if (copy.cta && !CTA_TYPES.includes(copy.cta)) {
@@ -522,7 +526,9 @@ export function accountLimits(accountDbId: number, now = Date.now()): RateLimits
     capPoints: fixed || st.capPoints || DEFAULT_CAP,
     tier: st.tier,
     usedPoints: (st.log ?? []).filter(([t]) => t > now - WINDOW_MS).reduce((s, [, p]) => s + p, 0),
-    hourPct: st.lastBuc && st.lastBuc.at > now - 3_600_000 ? st.lastBuc.pct : undefined,
+    // Meta's reading of the last hour, as it is now: the calls it counted leave the hour as it goes by
+    // (taken as spread over that hour), so a reading 45 minutes old counts a quarter of what it said.
+    hourPct: st.lastBuc && st.lastBuc.at > now - 3_600_000 ? st.lastBuc.pct * (1 - (now - st.lastBuc.at) / 3_600_000) : undefined,
   };
 }
 
@@ -606,7 +612,12 @@ export function launchWork(batch: BatchRow): LaunchWork {
     if (!left.length) continue;
     w.ads += left.length;
     w.adsets += b.adset_mode === "new_per_ad" ? left.length : 1;
-    if (b.status !== "running") w.runReads += b.adset_mode === "new_per_ad" ? 3 : 2;
+    // The run's look-up of earlier work: its ads (and new ad sets) by name, one read each; creatives only
+    // when an earlier run tried one or after a restore (Meta has no name filter for them: up to 10 pages).
+    if (b.status !== "running") {
+      const need = lookupsNeeded(b, left);
+      w.runReads += (need.ads ? 1 : 0) + (need.adsets ? 1 : 0) + (need.creatives ? CREATIVE_LOOKUP_PAGES : 0);
+    }
     if (b.adset_mode === "new_per_ad") w.newAdsets += left.filter((a) => !a.meta_adset_id).length;
     else if (b.adset_mode === "new_shared" && !b.shared_adset_id) {
       w.newAdsets += 1;
@@ -694,7 +705,7 @@ export function buildPreview(batchId: number, dest: DestinationInfo, capPoints: 
       })),
       copy,
       hasOverride: !!ad.copy_override && ad.copy_override !== "{}",
-      override: ad.copy_override ? (JSON.parse(ad.copy_override) as Partial<ReturnType<typeof adCopy>>) : {},
+      override: adOverride(ad) as Partial<ReturnType<typeof adCopy>>,
       urlTags: renderUtm(copy.utmTemplate, ctx),
       checks,
       status: ad.status,

@@ -295,7 +295,8 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
             <div>
               <small>{s.copy.headlines.length} headline{s.copy.headlines.length === 1 ? "" : "s"}</small>
               {s.copy.headlines.map((t, i) => <p key={i}><strong>{t}</strong></p>)}
-              <small>Description</small><p>{s.copy.description || "—"}</p>
+              <small>{s.copy.descriptions.length} description{s.copy.descriptions.length === 1 ? "" : "s"}</small>
+              {s.copy.descriptions.length ? s.copy.descriptions.map((t, i) => <p key={i}>{t}</p>) : <p>—</p>}
               <small>Button and link</small><p>{s.copy.cta.replace(/_/g, " ").toLowerCase()} → {s.copy.linkUrl || "no link"}</p>
               {s.copy.utmTemplate && <><small>UTM</small><p><code>{s.copy.utmTemplate}</code></p></>}
             </div>

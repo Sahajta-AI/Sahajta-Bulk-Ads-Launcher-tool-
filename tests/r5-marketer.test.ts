@@ -282,7 +282,7 @@ describe("D1 · display link and description are shown everywhere", () => {
     expect(getAds(batchId).every((a) => a.status === "done")).toBe(true);
     const ads = await call("list_ads", { adset: "November test ad set" });
     expect(ads.isError, ads.text).toBe(false);
-    expect(ads.text).toMatch(/description: "Plots from 20 lakh"\n {2}link: https:\/\/example\.com\/visit[^\n]* · display link: sahajta\.com\/visit/);
+    expect(ads.text).toMatch(/descriptions: "Plots from 20 lakh"\n {2}button: [^\n]+ · file: [^\n]+\n {2}link: https:\/\/example\.com\/visit[^\n]* · display link: sahajta\.com\/visit/);
     expect(ads.text).toMatch(/display link: sahajta\.com\/ad2/);
   }, 120_000);
 });

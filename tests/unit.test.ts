@@ -135,7 +135,7 @@ describe("estimate", () => {
 
 describe("creative", () => {
   const preset = { name: "x", pageId: "p1", pageName: "", igUserId: "ig1", igName: "", enhancements: {}, multiAdvertiser: false };
-  const copy = { primaryTexts: ["a", "b"], headlines: ["h"], description: "", cta: "LEARN_MORE", linkUrl: "https://x.com", utmTemplate: "" };
+  const copy = { primaryTexts: ["a", "b"], headlines: ["h"], descriptions: [], cta: "LEARN_MORE", linkUrl: "https://x.com", utmTemplate: "" };
   it("switches every enhancement off and never sends standard_enhancements", () => {
     const c = buildCreative({ name: "n", copy, urlTags: "", preset, assets: [{ kind: "image", slot: "feed", imageHash: "h1" }] }) as { degrees_of_freedom_spec: { creative_features_spec: Record<string, { enroll_status: string }> }; contextual_multi_ads: { enroll_status: string } };
     const spec = c.degrees_of_freedom_spec.creative_features_spec;

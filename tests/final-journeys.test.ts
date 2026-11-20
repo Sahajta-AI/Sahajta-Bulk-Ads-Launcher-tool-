@@ -579,7 +579,7 @@ describe("Journey 4 · results, delivery and lists on what was made", () => {
     plain(l1.text);
     const edited = l1.text.split("\n- ").find((x) => x.includes(`(id ${a2.meta_ad_id})`)) ?? "";
     expect(edited).toMatch(/· paused · in review ·/);
-    expect(edited).toMatch(/headlines: Final headline · description: "Plots from 20 lakh"/);
+    expect(edited).toMatch(/headlines: Final headline\n {2}descriptions: "Plots from 20 lakh"/);
     expect(edited).toMatch(/display link: sahajta\.com\/visit/);
     // The copy and the ad from the post: on, on the original posts.
     const l2 = await call("list_ads", { adset: "Final copy 1" });

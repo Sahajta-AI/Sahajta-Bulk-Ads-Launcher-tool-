@@ -368,7 +368,7 @@ describe("the page: small fixes", () => {
   it("Settings 'Add' refuses a name in use (copy template and preset); Claude's save by name still edits", async () => {
     await batch();
     const id = saveCopyTemplate({ name: "Site Visit", primaryTexts: ["A"], linkUrl: "https://example.com/a" });
-    expect(() => saveCopyTemplate(copyBody({ name: "SITE VISIT", texts: ["B"], heads: [], desc: "", cta: "LEARN_MORE", link: "", utm: "", displayLink: "", leadFormId: "" }))).toThrow(/A copy template is already called "SITE VISIT"/);
+    expect(() => saveCopyTemplate(copyBody({ name: "SITE VISIT", texts: ["B"], heads: [], descs: [], cta: "LEARN_MORE", link: "", utm: "", displayLink: "", leadFormId: "" }))).toThrow(/A copy template is already called "SITE VISIT"/);
     expect(saveCopyTemplate({ name: "site visit", primaryTexts: ["C"] })).toBe(id); // Claude: edit by name
     const p = Number(savePreset({ name: "Main page", pageId: "p1", pageName: "Sahajta AI" }));
     expect(() => savePreset({ name: "main page", pageId: "p2", create: true })).toThrow(/A settings preset is already called/);

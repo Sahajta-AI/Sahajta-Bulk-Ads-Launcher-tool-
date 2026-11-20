@@ -67,7 +67,8 @@ export async function uploadVideo(
   } catch (e) {
     // Meta refused the 3-call flow (at start, during the bytes, or at finish; its docs say system
     // users may not be supported). Forget that attempt and use the older chunked upload instead.
-    if (e instanceof MetaError && !e.isTransient) {
+    // Not for an expired or invalid login (190, 102): every call fails then, and the launch stops at once.
+    if (e instanceof MetaError && !e.isTransient && e.code !== 190 && e.code !== 102) {
       chunkedClients.add(client);
       saveMedia({ ad_account_id: opts.accountDbId, sha256: opts.sha, kind: "video", status: "uploading", video_id: null, upload_state: null });
       return uploadVideoChunked(client, opts);

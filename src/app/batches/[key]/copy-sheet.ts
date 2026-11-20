@@ -1,5 +1,5 @@
 // Per-ad copy pasted from a sheet (pure: no React, so it can be unit tested).
-// Columns: ad (number, creative or file name), primary_text_1..5, headline_1..5, description,
+// Columns: ad (number, creative or file name), primary_text_1..5, headline_1..5, description_1..5,
 // link, display_link, lead_form_id, cta, utm, enhancements (feature keys switched ON for that ad
 // only, comma-separated; "none" = all off), multi_advertiser (yes/no). Empty cells keep what the ad
 // has now (the server merges: a field left out keeps the ad's own copy, or else the batch's copy).
@@ -86,7 +86,8 @@ export function parseCopySheet(text: string, features: { key: string }[] = []): 
     const heads = many("headline", "headline");
     if (texts.length) copy.primaryTexts = texts;
     if (heads.length) copy.headlines = heads;
-    if (get("description")) copy.description = get("description");
+    const descs = many("description", "description");
+    if (descs.length) copy.descriptions = descs;
     if (get("link") || get("link_url")) copy.linkUrl = get("link") || get("link_url");
     if (get("display_link")) copy.displayLink = get("display_link");
     if (get("lead_form_id") || get("lead_form")) copy.leadFormId = get("lead_form_id") || get("lead_form");

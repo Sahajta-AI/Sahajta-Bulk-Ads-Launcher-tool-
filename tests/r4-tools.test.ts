@@ -103,7 +103,7 @@ const SAMPLE: Record<string, unknown> = {
   page_id: "p1", app_id: "1", app_store_url: "https://example.com/app", whatsapp_number: "+919812345678", saved_audience_id: "1", countries: ["IN"], regions: [], cities: [], age_min: 25, age_max: 45,
   genders: "all", interests: [], custom_audiences: [], excluded_custom_audiences: [], advantage_audience: false, placements: "advantage", targeting: {}, attribution: "7d_click_1d_view",
   min_daily_spend: 100, max_daily_spend: 900, schedule: [], frequency_cap: { impressions: 2, days: 7 }, inventory_filter: "moderate", block_list_ids: [], languages: [], targeting_expansion: true,
-  dynamic_creative: false, replace_targeting: {}, primary_texts: ["T"], headlines: ["H"], description: "D", link_url: "https://example.com", cta: "LEARN_MORE", display_link: "sahajta.com",
+  dynamic_creative: false, replace_targeting: {}, primary_texts: ["T"], headlines: ["H"], descriptions: ["D1", "D2"], description: "D", link_url: "https://example.com", cta: "LEARN_MORE", display_link: "sahajta.com",
   url_tags: "utm_source=meta", media_url: "https://drive.google.com/file/d/x/view", creative_id: "1", post_id: "p1_123", source: "facebook", adsets: ["as1"], instagram_user_id: "ig1",
   campaigns: [], ads: [], whole_campaigns: [], source_audience: "123", country: "IN", size_percent: 1,
 };
@@ -278,10 +278,10 @@ describe("2 · list_ads: on/off and Meta's review apart, description and display
     addAd("ad_carousel", CAROUSEL_AD);
     const { call } = await claude();
     const r = await call("list_ads", { adset: "November test ad set" });
-    expect(adBlock(r.text, "ad_link")).toMatch(/description: "Desc A"\n {2}link: https:\/\/example.com\/a · display link: sahajta.com\/a/);
-    expect(adBlock(r.text, "ad_video")).toMatch(/description: "Desc V"\n {2}link: https:\/\/example.com\/v · display link: sahajta.com\/v/);
-    expect(adBlock(r.text, "ad_feed")).toMatch(/headlines: Title F · description: "Desc F"\n {2}link: https:\/\/example.com\/f · display link: sahajta.com\/f/);
-    expect(adBlock(r.text, "ad_carousel")).toMatch(/headlines: Card 1 \| Card 2 · description: "Desc C"\n {2}link: https:\/\/example.com\/c · display link: sahajta.com\/c/);
+    expect(adBlock(r.text, "ad_link")).toMatch(/descriptions: "Desc A"\n {2}button: learn more · file: image h1 \(name not known\)\n {2}link: https:\/\/example.com\/a · display link: sahajta.com\/a/);
+    expect(adBlock(r.text, "ad_video")).toMatch(/descriptions: "Desc V"\n {2}button: learn more · file: video v1 \(name not known\)\n {2}link: https:\/\/example.com\/v · display link: sahajta.com\/v/);
+    expect(adBlock(r.text, "ad_feed")).toMatch(/headlines: Title F\n {2}descriptions: "Desc F"\n {2}button: learn more · file: –\n {2}link: https:\/\/example.com\/f · display link: sahajta.com\/f/);
+    expect(adBlock(r.text, "ad_carousel")).toMatch(/headlines: Card 1 \| Card 2\n {2}descriptions: "Desc C"\n {2}button: learn more · file: image h1 \(name not known\), image h2 \(name not known\)\n {2}link: https:\/\/example.com\/c · display link: sahajta.com\/c/);
     expect(r.text).not.toMatch(/undefined|null/);
   });
 
@@ -299,7 +299,7 @@ describe("2 · list_ads: on/off and Meta's review apart, description and display
     const r = await call("list_ads", { adset: "as1" });
     const line = adBlock(r.text, "ad_link");
     expect(line).toMatch(/· paused · in review \(Meta is processing the change\) · /);
-    expect(line).toMatch(/description: "New description"/);
+    expect(line).toMatch(/descriptions: "New description"/);
     expect(line).toMatch(/display link: sahajta.com\/new/);
   });
 

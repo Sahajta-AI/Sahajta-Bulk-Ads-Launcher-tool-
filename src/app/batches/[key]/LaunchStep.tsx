@@ -141,7 +141,7 @@ export default function LaunchStep({ view, dest, patch, summary, summaryError, s
             <dt>Time</dt><dd>{view.preview.estimate.text}</dd>
             <dt>When</dt><dd>{l.goLive}</dd>
             <dt>Copy</dt><dd>{l.copy.primaryTexts} primary text{l.copy.primaryTexts === 1 ? "" : "s"}, {l.copy.headlines} headline{l.copy.headlines === 1 ? "" : "s"}, {l.copy.cta.replace(/_/g, " ").toLowerCase()} → {l.copy.link ? <a href={l.copy.link} target="_blank" rel="noreferrer">{l.copy.link}</a> : <span style={{ color: "var(--err)" }}>no link</span>}
-              {" "}· display link {s.copy.displayLink || "none"} · description {s.copy.description ? `“${s.copy.description}”` : "none"}
+              {" "}· display link {s.copy.displayLink || "none"} · {s.copy.descriptions.length ? `${s.copy.descriptions.length} description${s.copy.descriptions.length === 1 ? "" : "s"}: ${s.copy.descriptions.map((d) => `“${d}”`).join(", ")}` : "description none"}
               {ownLinks > 0 && <div><small>{ownLinks} ad{ownLinks === 1 ? " has its" : "s have their"} own link (shown in the ads table).</small></div>}
             </dd>
             <dt>Settings</dt><dd>WhatsApp number {s.preset?.whatsappNumber || "none"} · Threads account {s.preset?.threadsUserId || "none"} · branded content partner Page {s.preset?.sponsorPageId || "none"}</dd>

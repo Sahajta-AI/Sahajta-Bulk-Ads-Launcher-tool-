@@ -583,7 +583,7 @@ describe("Row 5 · copy templates and per-ad copy", () => {
       link_url: "https://example.com/visit", cta: "SIGN_UP", display_link: "sahajta.com/visit", lead_form_id: "123456789",
     });
     expect(s.isError).toBe(false);
-    expect.soft(s.text).toMatch(/Created copy template "TEST 5x5" \(id \d+\): 5 primary text\(s\), 5 headline\(s\), SIGN_UP → https:\/\/example.com\/visit/);
+    expect.soft(s.text).toMatch(/Created copy template "TEST 5x5" \(id \d+\): 5 primary text\(s\), 5 headline\(s\), \d+ description\(s\), SIGN_UP → https:\/\/example.com\/visit/);
     expect.soft(s.text, "the answer says the UTM tags it got by default").toMatch(/utm_source=facebook/);
     const l = await tool("list_templates");
     const line = l.text.split("\n").filter((x) => x.includes("TEST 5x5")).join(" ");
@@ -617,7 +617,7 @@ describe("Row 5 · copy templates and per-ad copy", () => {
     const pv = await tool("preview_batch", { batch_id: key });
     readable(pv.text);
     const row = (n: number) => pv.text.split("\n").find((x) => x.startsWith(`| ${n} |`)) ?? "";
-    expect.soft(row(hook)).toMatch(/5 texts, 5 headlines → https:\/\/example.com\/hook/);
+    expect.soft(row(hook)).toMatch(/5 texts, 5 headlines, \d+ descriptions → https:\/\/example.com\/hook/);
     expect.soft(row(price), "the price ad's own headline and button are visible in the preview").toMatch(/Price drop headline|GET_QUOTE/);
     // The pre-launch summary's Copy line is the batch's copy, not ad 1's own link.
     expect.soft(pv.text, "summary Copy line is not ad 1's per-ad link").not.toMatch(/Copy: .*→ https:\/\/example.com\/hook ·/);

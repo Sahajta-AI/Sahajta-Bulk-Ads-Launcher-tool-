@@ -288,7 +288,7 @@ describe("P14 · several texts on an ad without text options", () => {
       { type: "copy_ad", ref: "cp", ad: "ad9", adsets: ["as4"] },
       { type: "edit_ad", ad: "$cp", headlines: ["A", "B"] },
     ] });
-    expect(errorsOf(s)).toMatch(/Step 2: .*one primary text and one headline.*2 headlines/);
+    expect(errorsOf(s)).toMatch(/Step 2: .*one primary text, one headline and one description.*2 headlines/);
   });
 });
 

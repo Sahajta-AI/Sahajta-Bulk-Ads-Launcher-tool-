@@ -35,7 +35,7 @@ export default function CopySheet({ batchKey, features, onSaved }: { batchKey: s
     <details style={{ marginTop: 12 }}>
       <summary>Each ad has its own copy? Paste it from a sheet</summary>
       <p className="hint">
-        Copy the rows from Google Sheets with the header row. Columns: <code>ad</code> (ad number or file name), <code>primary_text_1</code> … <code>primary_text_5</code>, <code>headline_1</code> … <code>headline_5</code>, <code>description</code>, <code>link</code>, <code>display_link</code> (short link shown on the ad), <code>lead_form_id</code>, <code>cta</code>, <code>utm</code> (link tags). {EMPTY_CELLS}
+        Copy the rows from Google Sheets with the header row. Columns: <code>ad</code> (ad number or file name), <code>primary_text_1</code> … <code>primary_text_5</code>, <code>headline_1</code> … <code>headline_5</code>, <code>description_1</code> … <code>description_5</code>, <code>link</code>, <code>display_link</code> (short link shown on the ad), <code>lead_form_id</code>, <code>cta</code>, <code>utm</code> (link tags). {EMPTY_CELLS}
       </p>
       <p className="hint">
         Two columns change Meta settings for that ad only: <code>enhancements</code> lists the AI enhancements to switch on, separated by commas (<code>none</code> switches all off), and <code>multi_advertiser</code> is <code>yes</code> or <code>no</code>. Leave them empty to keep what the ad has now (the preset, unless you set them for this ad before).

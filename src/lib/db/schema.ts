@@ -349,4 +349,10 @@ export const migrations: string[] = [
     FROM ads a JOIN batches b ON b.id = a.batch_id
     WHERE a.creative_hash IS NOT NULL AND a.meta_creative_id IS NOT NULL ORDER BY a.id;
   `,
+  // 9: Project Uday launch (20 Nov): up to 5 descriptions per ad, like primary texts and headlines.
+  //    copy_templates.description stays (the first one) so an older app version still reads it.
+  `
+  ALTER TABLE copy_templates ADD COLUMN descriptions TEXT NOT NULL DEFAULT '[]';   -- JSON list, up to 5
+  UPDATE copy_templates SET descriptions = json_array(trim(description)) WHERE trim(description) != '';
+  `,
 ];

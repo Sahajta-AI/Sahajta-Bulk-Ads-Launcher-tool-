@@ -141,9 +141,11 @@ describe("one creative per distinct creative in a launch: 3 images into 4 ad set
     }
     expect(new Set(ads.map((a) => a.meta_post_id)).size).toBe(3);
 
-    // Meta calls of the launch: 3 uploads + 3 creatives + 12 ads; 2 reads per ad set (earlier work) + 2 per creative.
+    // Meta calls of the launch: 3 uploads + 3 creatives + 12 ads; 2 reads per creative, and 1 per ad set (its
+    // ads by name, earlier work). Creatives are not listed on a first run (Meta has no name filter for them:
+    // that was up to 10 more reads per ad set on real Meta until 20 Nov).
     const { writes, reads } = callsSince(from);
-    expect({ writes, reads }).toEqual({ writes: 18, reads: 14 });
+    expect({ writes, reads }).toEqual({ writes: 18, reads: 10 });
     console.log(`3 ads × 4 ad sets: ${writes + reads} Meta calls (${writes} writes, ${reads} reads, ${writes * 3 + reads} points), ${minutes.toFixed(1)} simulated minutes; estimate said "${est.text}"`);
     expect(minutes).toBeLessThan((est.seconds / 60) * 1.6);
     expect(minutes).toBeGreaterThan((est.seconds / 60) * 0.5);
@@ -162,7 +164,7 @@ describe("one creative per distinct creative in a launch: 3 images into 4 ad set
     expect(mock.of("creative")).toHaveLength(3);
     expect(mock.of("ad")).toHaveLength(45);
     const { writes, reads } = callsSince(from);
-    expect({ writes, reads }).toEqual({ writes: 51, reads: 36 });
+    expect({ writes, reads }).toEqual({ writes: 51, reads: 21 });
     console.log(`3 ads × 15 ad sets: ${writes + reads} Meta calls (${writes} writes, ${reads} reads, ${writes * 3 + reads} points), ${minutes.toFixed(1)} simulated minutes; estimate said "${est.text}"`);
     expect(minutes).toBeLessThan((est.seconds / 60) * 1.6);
     expect(minutes).toBeGreaterThan((est.seconds / 60) * 0.5);
@@ -285,8 +287,8 @@ describe("no second creative, ever", () => {
     expect(results[0]).toEqual({ done: 2, failed: 1 });
     expect(results.slice(1)).toEqual(Array(3).fill({ done: 3, failed: 0 }));
     expect(mock.of("creative")).toHaveLength(3);
-    // Only the 4 runs' own checks read the creatives: nobody looked up the refused try.
-    expect(mock.calls.filter((c) => c.method === "GET" && c.path.endsWith("/adcreatives")).length).toBe(4);
+    // Nobody read the creatives: Meta refused the try, so there is nothing to look up, and first runs look up nothing.
+    expect(mock.calls.filter((c) => c.method === "GET" && c.path.endsWith("/adcreatives")).length).toBe(0);
     resetFailed(group[0].id);
     expect(await runBatch(group[0].id, deps)).toEqual({ done: 3, failed: 0 });
     expect(mock.of("creative")).toHaveLength(3);
@@ -357,7 +359,8 @@ describe("time estimate of the whole launch", () => {
 
   it("counts what the launcher does: each file once, each creative once, an ad per ad set", async () => {
     const { batchId } = await draft(images, 4);
-    expect(launchWork(getBatch(batchId)!)).toMatchObject({ ads: 12, adsets: 4, creatives: 3, newAdsets: 0, runReads: 8 });
+    // First runs: one look-up of earlier work per ad set (its ads by name), no creative listing.
+    expect(launchWork(getBatch(batchId)!)).toMatchObject({ ads: 12, adsets: 4, creatives: 3, newAdsets: 0, runReads: 4 });
     expect(launchWork(getBatch(batchId)!).uploads).toHaveLength(3);
   });
 
@@ -433,8 +436,8 @@ describe("time estimate of the whole launch", () => {
     // The pacer's own numbers, as accountLimits reads them from the saved rate state.
     const used = deps.client.pacer.state.log.filter(([t]) => t > clock.now() - 300_000).reduce((s, [, p]) => s + p, 0);
     const left = launchTimeLeft(main, { ...STARTER, usedPoints: used }, clock.now())!;
-    expect(left.text).toMatch(/^about \d+ minutes left for 30 ads in 10 ad sets \(at the pace Meta allows right now, about \d new ads? a minute\)$/);
-    expect(left.observed).toBe(true);
+    // The slower of the two: the pace seen so far, or the account's limits for the work left.
+    expect(left.text).toMatch(/^about \d+ minutes left for 30 ads in 10 ad sets \((at the pace Meta allows right now|Meta's limit on this ad account sets the pace): about \d new ads? a minute\)$/);
     const start = clock.now();
     await runAll(group.slice(5), deps);
     const real = (clock.now() - start) / 1000;

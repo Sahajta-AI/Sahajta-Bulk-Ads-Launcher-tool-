@@ -49,7 +49,7 @@ export function httpApi(baseUrl: string, apiKey: string): LauncherApi {
 // Shapes we read from the app's API (subset of BatchView).
 interface PresetView { name: string; pageId?: string; pageName?: string; igUserId?: string; igName?: string; enhancements?: Record<string, string>; multiAdvertiser?: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string }
 interface Check { level: "error" | "warning"; message: string }
-interface AdCopy { primaryTexts: string[]; headlines: string[]; description?: string; linkUrl: string; cta: string; utmTemplate?: string; displayLink?: string; leadFormId?: string }
+interface AdCopy { primaryTexts: string[]; headlines: string[]; descriptions?: string[]; linkUrl: string; cta: string; utmTemplate?: string; displayLink?: string; leadFormId?: string }
 interface ViewAd {
   position: number;
   creativeName: string;
@@ -200,7 +200,7 @@ function copyLine(v: View | undefined, l: NonNullable<LaunchSum["launch"]>): str
   const label = notes.length ? `Copy (the batch copy; ${notes.join("; ")})` : "Copy";
   if (!c) return `${label}: ${l.copy.primaryTexts} primary text(s), ${l.copy.headlines} headline(s), ${l.copy.cta} → ${l.copy.link || "no link"}${l.copy.utm ? ` · UTM ${l.copy.utm}` : ""}. First text: "${clip(l.copy.firstText, 160)}"`;
   const first = c.primaryTexts[0] ?? "";
-  return `${label}: ${c.primaryTexts.length} primary text(s), ${c.headlines.length} headline(s), ${c.cta} → ${c.linkUrl || "no link"}${c.utmTemplate ? ` · UTM ${c.utmTemplate}` : ""} · display link ${c.displayLink || "none"} · description ${c.description ? `"${clip(c.description, 80)}"` : "none"}${c.leadFormId ? ` · lead form ${c.leadFormId}` : ""}. First text: "${clip(first, 160)}"`;
+  return `${label}: ${c.primaryTexts.length} primary text(s), ${c.headlines.length} headline(s), ${c.cta} → ${c.linkUrl || "no link"}${c.utmTemplate ? ` · UTM ${c.utmTemplate}` : ""} · display link ${c.displayLink || "none"} · ${descText(c.descriptions, 80)}${c.leadFormId ? ` · lead form ${c.leadFormId}` : ""}. First text: "${clip(first, 160)}"`;
 }
 
 function summaryText(s: LaunchSum, v?: View): string {
@@ -231,16 +231,21 @@ function summaryText(s: LaunchSum, v?: View): string {
   return lines.join("\n");
 }
 
+/** 'descriptions "A" | "B"' (each cut to `max` characters), or "description none". */
+function descText(list: string[] | undefined, max = 200): string {
+  return list?.length ? `description${list.length > 1 ? "s" : ""} ${list.map((d) => `"${clip(d, max)}"`).join(" | ")}` : "description none";
+}
+
 /** The ad's copy in the table; an ad with its own copy shows its first text, headline and button. */
 function copyCell(a: ViewAd): string {
-  const base = `${a.copy.primaryTexts.length} texts, ${a.copy.headlines.length} headlines → ${a.copy.linkUrl || "no link"}`;
+  const base = `${a.copy.primaryTexts.length} texts, ${a.copy.headlines.length} headlines, ${a.copy.descriptions?.length ?? 0} descriptions → ${a.copy.linkUrl || "no link"}`;
   if (!a.hasOverride) return base;
   const parts = [
     a.copy.primaryTexts[0] ? `text "${clip(a.copy.primaryTexts[0], 60)}"` : "",
     a.copy.headlines[0] ? `headline "${clip(a.copy.headlines[0], 40)}"` : "",
     `button ${a.copy.cta}`,
     a.copy.displayLink ? `display link ${a.copy.displayLink}` : "",
-    a.copy.description ? `description "${clip(a.copy.description, 40)}"` : "",
+    a.copy.descriptions?.length ? descText(a.copy.descriptions, 40) : "",
     a.copy.leadFormId ? `lead form ${a.copy.leadFormId}` : "",
     a.override?.format === "carousel" ? "carousel" : "",
   ].filter(Boolean);
@@ -493,7 +498,7 @@ export function registerTools(server: McpServer, api: LauncherApi) {
     async () => {
       try {
         const t = await api.call<{
-          copy: { id: number; name: string; primaryTexts: string[]; headlines: string[]; linkUrl: string; cta: string; utmTemplate?: string; displayLink?: string; leadFormId?: string; description?: string }[];
+          copy: { id: number; name: string; primaryTexts: string[]; headlines: string[]; linkUrl: string; cta: string; utmTemplate?: string; displayLink?: string; leadFormId?: string; descriptions?: string[] }[];
           naming: { id: number; name: string; kind: string; pattern: string; is_default: number }[];
           presets: { id: number; name: string; pageId?: string; pageName: string; igName: string; enhancementsOn: string[]; multiAdvertiser: boolean; isDefault: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string }[];
           features: { key: string; label: string }[];
@@ -503,7 +508,7 @@ export function registerTools(server: McpServer, api: LauncherApi) {
           "Copy templates:",
           ...t.copy.map(
             (c) =>
-              `  - "${c.name}" (id ${c.id}): ${c.primaryTexts.length} primary texts, ${c.headlines.length} headlines, ${c.cta} → ${c.linkUrl || "no link"} · display link ${c.displayLink || "none"} · description ${c.description ? `"${c.description}"` : "none"} · lead form ${c.leadFormId || "none"} · UTM ${c.utmTemplate || "none"}\n    First text: ${c.primaryTexts[0] ?? "(none)"}`,
+              `  - "${c.name}" (id ${c.id}): ${c.primaryTexts.length} primary texts, ${c.headlines.length} headlines, ${c.descriptions?.length ?? 0} descriptions, ${c.cta} → ${c.linkUrl || "no link"} · display link ${c.displayLink || "none"} · ${descText(c.descriptions)} · lead form ${c.leadFormId || "none"} · UTM ${c.utmTemplate || "none"}\n    First text: ${c.primaryTexts[0] ?? "(none)"}`,
           ),
           "Naming templates:",
           ...t.naming.map((n) => `  - ${n.kind === "ad" ? "Ad" : n.kind === "adset" ? "Ad set" : "Campaign"} "${n.name}" (id ${n.id}): ${n.pattern}${n.is_default ? " (default)" : ""}`),

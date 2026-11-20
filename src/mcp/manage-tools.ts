@@ -359,7 +359,8 @@ const AD_EDIT: Fields<AdEditSpec> = {
   status: STATUS,
   primary_texts: { t: "list of up to 5 texts. Several need an ad made with text options.", brief: "up to 5" },
   headlines: { t: "list of up to 5 headlines (a carousel: card N gets headline N, or the first).", brief: "up to 5" },
-  description: { t: 'text: the description under the headline ("" removes it).' },
+  descriptions: { t: "list of up to 5 descriptions, the line under the headline (a carousel: card N gets description N, or the first). Several need an ad made with text options. [] removes them.", brief: "up to 5" },
+  description: { t: 'text: one description (same as descriptions: ["…"]; "" removes it).' },
   link_url: { t: "text: the website link, starting with https://." },
   cta: { t: `the button: one of ${CTA_TYPES.join(", ")}.`, brief: "LEARN_MORE, SIGN_UP…" },
   display_link: { t: 'text: the short link shown on the ad, e.g. "sahajta.com/visit" ("" removes it).' },
@@ -473,7 +474,7 @@ const STEPS: { [T in StepType]: { what: string; fields: Fields<OpOf<T>>; also?: 
   edit_ad: {
     what: "Change existing ads. Text or file changes make a new creative on the same ad (Meta reviews it again). Ads that run an existing post can only change name and status.",
     fields: { ad: { t: 'text: the ad\'s ID, or "$ref" of an earlier step ("$ref" of several = all of them).', brief: 'ID or "$ref"' }, ...AD_EDIT },
-    example: { type: "edit_ad", ad: "<ad ID>", headlines: ["Free site visit"], description: "Plots from 20 lakh", display_link: "sahajta.com/visit" },
+    example: { type: "edit_ad", ad: "<ad ID>", headlines: ["Free site visit"], descriptions: ["Plots from 20 lakh", "Site visit this Sunday"], display_link: "sahajta.com/visit" },
   },
   copy_ad: {
     what: "Copy an ad into other ad sets with the same creative (and post), paused unless status ACTIVE.",
@@ -771,7 +772,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
 
   // ---------- Templates and presets ----------
 
-  type CopyT = { id: number; name: string; primaryTexts: string[]; headlines: string[]; description: string; cta: string; linkUrl: string; utmTemplate: string; displayLink?: string; leadFormId?: string };
+  type CopyT = { id: number; name: string; primaryTexts: string[]; headlines: string[]; descriptions: string[]; cta: string; linkUrl: string; utmTemplate: string; displayLink?: string; leadFormId?: string };
   type PresetT = { id: number; name: string; pageId: string; pageName: string; igUserId: string; igName: string; enhancementsOn: string[]; multiAdvertiser: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string; isDefault: boolean };
   type Templates = { copy: CopyT[]; presets: PresetT[]; features: { key: string; label: string }[]; naming: { id: number; name: string; kind: "ad" | "adset" | "campaign"; pattern: string; is_default: number }[] };
 
@@ -790,13 +791,14 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
     {
       title: "Create or edit a copy template",
       description:
-        "Create a copy template, or edit one: give template (its id or exact name), or a name that already exists. When editing, fields left out keep their saved value and \"\" clears a field. Up to 5 primary texts and 5 headlines. utm_template is added to every ad's link; Meta fills {{campaign.name}}, {{adset.name}}, {{ad.name}}, {{ad.id}} itself. New templates get UTM tags by default. The answer shows everything saved.",
+        "Create a copy template, or edit one: give template (its id or exact name), or a name that already exists. When editing, fields left out keep their saved value and \"\" (or []) clears a field. Up to 5 primary texts, 5 headlines and 5 descriptions. utm_template is added to every ad's link; Meta fills {{campaign.name}}, {{adset.name}}, {{ad.name}}, {{ad.id}} itself. New templates get UTM tags by default. The answer shows everything saved.",
       inputSchema: {
         template: z.string().optional().describe("Id or exact name of the template to edit. Leave out to create one (a name that already exists edits that one)."),
         name: z.string().optional().describe("Name; with template, a new name for it"),
         primary_texts: z.array(z.string()).max(5).optional(),
         headlines: z.array(z.string()).max(5).optional(),
-        description: z.string().optional(),
+        descriptions: z.array(z.string()).max(5).optional().describe("Up to 5 descriptions (the line under the headline); Meta rotates them like the headlines."),
+        description: z.string().optional().describe('One description: same as descriptions ["…"]. Use descriptions for several.'),
         link_url: z.string().optional(),
         cta: z.string().optional().describe("Call to action, e.g. LEARN_MORE, SIGN_UP, GET_QUOTE, BOOK_NOW, CONTACT_US, WHATSAPP_MESSAGE"),
         utm_template: z.string().optional(),
@@ -815,7 +817,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
           name: a.name,
           primaryTexts: a.primary_texts,
           headlines: a.headlines,
-          description: a.description,
+          ...(a.descriptions !== undefined ? { descriptions: a.descriptions } : a.description !== undefined ? { descriptions: [a.description] } : {}),
           cta: a.cta,
           linkUrl: a.link_url,
           utmTemplate: a.utm_template,
@@ -826,10 +828,11 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
         const c = (await api.call<Templates>("GET", "/api/templates")).copy.find((x) => x.id === r.id);
         if (!c) return `Saved copy template (id ${r.id}).`;
         return [
-          `${cur ? "Updated" : "Created"} copy template "${c.name}" (id ${c.id}): ${c.primaryTexts.length} primary text(s), ${c.headlines.length} headline(s), ${c.cta} → ${c.linkUrl || "no link"}.`,
+          `${cur ? "Updated" : "Created"} copy template "${c.name}" (id ${c.id}): ${c.primaryTexts.length} primary text(s), ${c.headlines.length} headline(s), ${c.descriptions.length} description(s), ${c.cta} → ${c.linkUrl || "no link"}.`,
           `Primary texts: ${c.primaryTexts.map((x, i) => `${i + 1}. "${x}"`).join(" ") || "none"}`,
           `Headlines: ${c.headlines.map((x, i) => `${i + 1}. "${x}"`).join(" ") || "none"}`,
-          `Description: ${c.description || "none"} · Display link: ${c.displayLink || "none"} · Lead form: ${c.leadFormId || "none"}`,
+          `Descriptions: ${c.descriptions.map((x, i) => `${i + 1}. "${x}"`).join(" ") || "none"}`,
+          `Display link: ${c.displayLink || "none"} · Lead form: ${c.leadFormId || "none"}`,
           `UTM tags: ${c.utmTemplate || "none"}${!cur && a.utm_template === undefined && c.utmTemplate ? " (the default for new templates)" : ""}`,
         ].join("\n");
       }),
@@ -939,7 +942,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
     {
       title: "Set copy per ad in a batch",
       description:
-        "Give ads in a batch their own copy and settings: primary texts (up to 5), headlines (up to 5), description, link, display link, call to action, lead form, UTM tags, Advantage+ enhancements on, multi-advertiser, carousel, angle. Each row names the ad by its number in the preview or by creative / file name, and changes only the fields it gives: fields left out keep the ad's current value (its own, or the batch's template and preset); \"\" or [] clears a field so the batch copy is used again; format and lead form stay unless given. All rows are saved, or none (the error names the row). Works before launch, and after launch for ads that were not created (retry_failed then creates them with the new copy).",
+        "Give ads in a batch their own copy and settings: primary texts (up to 5), headlines (up to 5), descriptions (up to 5), link, display link, call to action, lead form, UTM tags, Advantage+ enhancements on, multi-advertiser, carousel, angle. Each row names the ad by its number in the preview or by creative / file name, and changes only the fields it gives: fields left out keep the ad's current value (its own, or the batch's template and preset); \"\" or [] clears a field so the batch copy is used again; format and lead form stay unless given. All rows are saved, or none (the error names the row). Works before launch, and after launch for ads that were not created (retry_failed then creates them with the new copy).",
       inputSchema: {
         batch_id: z.string(),
         rows: z
@@ -948,7 +951,8 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
               ad: z.union([z.string(), z.number()]).describe("Ad number or creative/file name"),
               primary_texts: z.array(z.string()).max(5).optional(),
               headlines: z.array(z.string()).max(5).optional(),
-              description: z.string().optional(),
+              descriptions: z.array(z.string()).max(5).optional().describe("Up to 5 descriptions (the line under the headline)"),
+              description: z.string().optional().describe('One description: same as descriptions ["…"]'),
               link_url: z.string().optional(),
               cta: z.string().optional(),
               display_link: z.string().optional(),
@@ -972,7 +976,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
             const fields: Record<string, unknown> = {
               primaryTexts: r.primary_texts,
               headlines: r.headlines,
-              description: r.description,
+              descriptions: r.descriptions ?? (r.description !== undefined ? [r.description] : undefined),
               linkUrl: r.link_url,
               cta: r.cta,
               displayLink: r.display_link,
@@ -1148,18 +1152,22 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
       }),
   );
 
+  /** "IMG2.png" / "image IMG2.png, image IMG2_4x5.png" / "video 1234 (name not known)". */
+  const fileText = (files?: { kind: "image" | "video"; id: string; name: string | null }[]) =>
+    files?.length ? files.map((f) => (f.name ? `${f.kind} ${f.name}` : `${f.kind} ${f.id} (name not known)`)).join(", ") : "–";
+
   server.registerTool(
     "list_ads",
     {
       title: "Ads in an ad set",
-      description: "The ads of one ad set (by ID or name): ID, name, on/off (on or paused) and Meta's review state apart (e.g. \"paused · in review\"), texts, headlines, description, display link, link, and the Facebook post ID / Instagram media ID behind each (up to 100 ads). Use it to check an ad after edit_ad or copy_ad: still paused, and the new texts. Reuse a post with ads_from_post by its Facebook post ID (the Instagram media ID of an ad's post is for reference; Meta refuses it). Also for copy_ad and edit_ad.",
+      description: "The ads of one ad set (by ID or name): ID, name, on/off (on or paused) and Meta's review state apart (e.g. \"paused · in review\"), texts, headlines, descriptions, button, the image or video file (by file name), link, display link, UTM tags, and the Facebook post ID / Instagram media ID behind each (up to 100 ads). Use it to check an ad after edit_ad or copy_ad: still paused, the new texts, button and file. Reuse a post with ads_from_post by its Facebook post ID (the Instagram media ID of an ad's post is for reference; Meta refuses it). Also for copy_ad and edit_ad.",
       inputSchema: { adset: z.string().describe("Ad set ID or name") },
       annotations: { readOnlyHint: true },
     },
     async ({ adset }) =>
       run(async () => {
         const f = await idOf(api, "adset", adset);
-        type Ad = { id: string; name: string; status: string; effectiveStatus: string; onOff?: string; review?: string; fromPost: boolean; postId: string | null; instagramMediaId: string | null; primaryTexts: string[]; headlines: string[]; description?: string | null; displayLink?: string | null; link: string | null };
+        type Ad = { id: string; name: string; status: string; effectiveStatus: string; onOff?: string; review?: string; fromPost: boolean; postId: string | null; instagramMediaId: string | null; primaryTexts: string[]; headlines: string[]; descriptions?: string[]; displayLink?: string | null; link: string | null; button?: string | null; utmTags?: string | null; files?: { kind: "image" | "video"; id: string; name: string | null }[] };
         const r = await api.call<{ ads: Ad[]; truncated?: boolean; note?: string | null }>("GET", `/api/manage/ads?adset=${encodeURIComponent(f.id)}`);
         const which = foundText("adset", f, adset);
         if (!r.ads.length) return `No ads in ${which}.`;
@@ -1169,7 +1177,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
         lines.push(
           ...r.ads.map(
             (a) =>
-              `- "${a.name}" (id ${a.id}) · ${state(a)}${a.fromPost ? " · runs an existing post" : ""} · post ID ${a.postId ?? "–"} · Instagram media ID ${a.instagramMediaId ?? "–"}\n  texts: ${a.primaryTexts.map((t) => `"${t.slice(0, 80)}"`).join(" | ") || "–"}\n  headlines: ${a.headlines.join(" | ") || "–"} · description: ${a.description ? `"${a.description}"` : "–"}\n  link: ${a.link ?? "–"} · display link: ${a.displayLink ?? "–"}`,
+              `- "${a.name}" (id ${a.id}) · ${state(a)}${a.fromPost ? " · runs an existing post" : ""} · post ID ${a.postId ?? "–"} · Instagram media ID ${a.instagramMediaId ?? "–"}\n  texts: ${a.primaryTexts.map((t) => `"${t.slice(0, 80)}"`).join(" | ") || "–"}\n  headlines: ${a.headlines.join(" | ") || "–"}\n  descriptions: ${a.descriptions?.map((d) => `"${d}"`).join(" | ") || "–"}\n  button: ${a.button ? a.button.replace(/_/g, " ").toLowerCase() : "–"} · file: ${fileText(a.files)}\n  link: ${a.link ?? "–"} · display link: ${a.displayLink ?? "–"} · UTM tags: ${a.utmTags || "–"}`,
           ),
         );
         if (r.truncated || r.note) lines.push(r.note ?? "Only the first ads of this ad set are listed.");

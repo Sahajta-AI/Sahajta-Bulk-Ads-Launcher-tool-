@@ -72,13 +72,14 @@ export function presetBody(form: PresetForm, on: Iterable<string>) {
   };
 }
 
-/** What the copy template form edits (texts and headlines are the five boxes each). */
+/** What the copy template form edits (texts, headlines and descriptions are the five boxes each). */
 export interface CopyForm {
   id?: number;
   name: string;
   texts: string[];
   heads: string[];
-  desc: string;
+  /** Up to 5 description boxes. */
+  descs: string[];
   cta: string;
   link: string;
   utm: string;
@@ -97,7 +98,7 @@ export function copyBody(f: CopyForm) {
     name: f.name,
     primaryTexts: f.texts,
     headlines: f.heads,
-    description: f.desc,
+    descriptions: f.descs,
     cta: f.cta,
     linkUrl: f.link,
     utmTemplate: f.utm,

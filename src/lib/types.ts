@@ -3,7 +3,8 @@ import type { Kind, Ratio } from "./engine/media";
 export interface Copy {
   primaryTexts: string[]; // up to 5
   headlines: string[]; // up to 5
-  description: string;
+  /** Up to 5 (the line under the headline). Before 20 Nov 2026 one `description` string: see lib/descriptions.ts. */
+  descriptions: string[];
   cta: string; // Meta call_to_action type, e.g. LEARN_MORE
   linkUrl: string;
   utmTemplate: string;

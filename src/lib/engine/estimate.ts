@@ -158,7 +158,9 @@ function limitSeconds(w: LaunchWork, limits: RateLimits): { seconds: number; rat
   let hourlySec = 0;
   if (isStarter(limits)) {
     const allowed = STARTER_HOURLY_CALLS * TARGET;
-    const left = Math.max(0, allowed - ((limits.hourPct ?? 0) / 100) * STARTER_HOURLY_CALLS);
+    // Below 0 when the hour is already past the launcher's share: the pacer waits for those calls to
+    // leave the hour too, before the launch's own calls (not only for the launch's calls).
+    const left = allowed - ((limits.hourPct ?? 0) / 100) * STARTER_HOURLY_CALLS;
     hourlySec = Math.max(0, calls - left) / (allowed / 3600);
   }
   const bytes = w.uploads.reduce((s, u) => s + u.sizeBytes, 0);

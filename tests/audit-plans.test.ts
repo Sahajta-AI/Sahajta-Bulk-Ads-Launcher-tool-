@@ -291,7 +291,7 @@ describe("audit: editing an existing ad's texts", () => {
     // Corrected by the fix (P14): an ad made without text options keeps one text on Meta, so the check
     // refuses 3 texts plainly (it never promises 3 and then keeps only the first). One text still works.
     const v = await createPlan({ ops: [{ type: "edit_ad", ad: "ad9", primary_texts: ["Text A", "Text B", "Text C"] }] }, WHO, "claude");
-    expect(v.summary!.checks.filter((c) => c.level === "error").map((c) => c.message).join(" ")).toMatch(/one primary text and one headline.*3 primary texts/);
+    expect(v.summary!.checks.filter((c) => c.level === "error").map((c) => c.message).join(" ")).toMatch(/one primary text, one headline and one description.*3 primary texts/);
     const one = await createPlan({ ops: [{ type: "edit_ad", ad: "ad9", primary_texts: ["Text B"] }] }, WHO, "claude");
     expect(one.summary!.errors).toBe(0);
     await confirmAndRun(one.key);

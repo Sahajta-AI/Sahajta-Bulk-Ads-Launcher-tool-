@@ -41,7 +41,7 @@ export type CreativeShape = "story_spec" | "feed_spec_texts" | "feed_spec_placem
 /** Which request shape an ad needs. */
 export function creativeShape(input: Pick<CreativeInput, "assets" | "copy">): CreativeShape {
   if (input.assets.length > 1) return "feed_spec_placement";
-  if (input.copy.primaryTexts.length > 1 || input.copy.headlines.length > 1) return "feed_spec_texts";
+  if (input.copy.primaryTexts.length > 1 || input.copy.headlines.length > 1 || input.copy.descriptions.length > 1) return "feed_spec_texts";
   return "story_spec";
 }
 
@@ -91,7 +91,7 @@ function storySpec(input: CreativeInput, copy: Copy): Record<string, unknown> {
         link: copy.linkUrl,
         message: copy.primaryTexts[0] ?? "",
         name: copy.headlines[0] || undefined,
-        description: copy.description || undefined,
+        description: copy.descriptions[0] || undefined,
         caption: copy.displayLink || undefined,
         call_to_action: cta,
       },
@@ -105,13 +105,13 @@ function storySpec(input: CreativeInput, copy: Copy): Record<string, unknown> {
       image_hash: a.thumbnailHash,
       message: copy.primaryTexts[0] ?? "",
       title: copy.headlines[0] || undefined,
-      link_description: copy.description || undefined,
+      link_description: copy.descriptions[0] || undefined,
       call_to_action: copy.displayLink && cta.type !== "WHATSAPP_MESSAGE" ? { ...cta, value: { ...cta.value, link_caption: copy.displayLink } } : cta,
     },
   };
 }
 
-/** Carousel: each file is a card; card N gets headline N (or the first headline). Checked with Meta's validate_only, 18 Nov 2026. */
+/** Carousel: each file is a card; card N gets headline N and description N (or the first one). Checked with Meta's validate_only, 18 Nov 2026. */
 function carousel(input: CreativeInput, copy: Copy): Record<string, unknown> {
   const cta = callToAction(copy, input.preset);
   return {
@@ -128,7 +128,7 @@ function carousel(input: CreativeInput, copy: Copy): Record<string, unknown> {
         child_attachments: input.assets.map((a, i) => ({
           link: copy.linkUrl,
           name: copy.headlines[i] ?? copy.headlines[0] ?? undefined,
-          description: copy.description || undefined,
+          description: copy.descriptions[i] ?? copy.descriptions[0] ?? undefined,
           ...(a.kind === "image" ? { image_hash: a.imageHash } : { video_id: a.videoId, picture: a.thumbnailUrl, image_hash: a.thumbnailHash }),
           call_to_action: cta,
         })),
@@ -142,7 +142,7 @@ export function buildCreative(input: CreativeInput): Record<string, unknown> {
   const shape = creativeShape(input);
   let { copy } = input;
   if (shape === "feed_spec_placement" && pacTextsLimited()) {
-    copy = { ...copy, primaryTexts: copy.primaryTexts.slice(0, 1), headlines: copy.headlines.slice(0, 1) };
+    copy = { ...copy, primaryTexts: copy.primaryTexts.slice(0, 1), headlines: copy.headlines.slice(0, 1), descriptions: copy.descriptions.slice(0, 1) };
   }
 
   if (shape === "story_spec") return { ...commonFields(input), object_story_spec: storySpec(input, copy) };
@@ -158,7 +158,7 @@ export function buildCreative(input: CreativeInput): Record<string, unknown> {
       asset_feed_spec: {
         bodies: copy.primaryTexts.map((text) => ({ text })),
         titles: copy.headlines.length ? copy.headlines.map((text) => ({ text })) : undefined,
-        descriptions: copy.description ? [{ text: copy.description }] : undefined,
+        descriptions: copy.descriptions.length ? copy.descriptions.map((text) => ({ text })) : undefined,
         optimization_type: "DEGREES_OF_FREEDOM",
       },
     };
@@ -179,7 +179,10 @@ export function buildCreative(input: CreativeInput): Record<string, unknown> {
     ad_formats: [isVideo ? "SINGLE_VIDEO" : "SINGLE_IMAGE"],
     bodies: copy.primaryTexts.map((text) => ({ text, adlabels: textLabels("b") })),
     titles: copy.headlines.map((text) => ({ text, adlabels: textLabels("t") })),
-    descriptions: copy.description ? [{ text: copy.description }] : undefined,
+    // One description only: Meta refuses several in an ad with placement rules, labelled or not
+    // ("Multiple descriptions assets cannot be applied to rule no. 1", 100/1885878; validate_only on
+    // 1A, 20 Nov 2026). The preview warns when an ad's other descriptions are left out (pair_one_description).
+    descriptions: copy.descriptions.length ? [{ text: copy.descriptions[0] }] : undefined,
     link_urls: [{ website_url: copy.linkUrl, display_url: copy.displayLink || undefined }],
     call_to_action_types: [cta.type],
   };

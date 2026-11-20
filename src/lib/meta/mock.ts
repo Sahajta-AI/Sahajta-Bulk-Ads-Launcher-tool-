@@ -282,7 +282,11 @@ export class MockMeta {
     for (const [k, v] of url.searchParams) p[k] = v;
     const body = init?.body;
     if (body instanceof FormData) {
-      for (const [k, v] of body) p[k] = typeof v === "string" ? v : Buffer.from(await (v as Blob).arrayBuffer());
+      for (const [k, v] of body) {
+        p[k] = typeof v === "string" ? v : Buffer.from(await (v as Blob).arrayBuffer());
+        // The file name sent with an upload (Meta keeps it as the image's name in the library).
+        if (typeof v !== "string" && (v as File).name) p[`${k}__name`] = (v as File).name;
+      }
     } else if (typeof body === "string") {
       for (const [k, v] of new URLSearchParams(body)) p[k] = v;
     }
@@ -435,12 +439,18 @@ export class MockMeta {
       return ok(this.page([], p));
     }
     if (first === act && method === "GET") {
+      // The image library by hash: GET act/adimages?hashes=["h1","h2"] (each image's hash and the file name it was uploaded with).
+      if (edge === "adimages") {
+        const want = new Set((typeof p.hashes === "string" ? (JSON.parse(p.hashes) as string[]) : ((p.hashes as string[] | undefined) ?? [])).map(String));
+        return ok(this.page(this.of("image").filter((o) => !want.size || want.has(String(o.hash ?? o.id))).map((o) => ({ hash: o.hash ?? o.id, name: o.name, id: o.id })), p));
+      }
       const typeOf: Record<string, string> = { campaigns: "campaign", adsets: "adset", ads: "ad", adcreatives: "creative", promote_pages: "page", instagram_accounts: "ig", customaudiences: "audience", adspixels: "pixel" };
       if (!edge) return ok({ id: act, name: "Sahajta AI (mock)", currency: "INR", timezone_name: "Asia/Kolkata", account_status: this.o.accountStatus ?? 1, amount_spent: "0", spend_cap: "0", funding_source_details: { display_string: "Visa *1234" } });
       if (edge === "instagram_accounts" && this.o.igNotAllowed) return ok({ data: [], paging: { cursors: {} } });
       const t = typeOf[edge];
       if (!t) return fail(`Unknown edge ${edge}`);
-      if (edge === "adcreatives" && p.filtering && this.o.noCreativeFilter) return fail("Filtering is not supported on this edge");
+      // Real Meta has no name filter for creatives (1A, 20 Nov 2026): "(#100) Filtering field 'name' with operation 'contain' is not supported".
+      if (edge === "adcreatives" && p.filtering && (this.o.noCreativeFilter || JSON.stringify(p.filtering).includes('"name"'))) return fail(`Filtering field 'name' with operation 'contain' is not supported`, 100);
       // Real Meta refuses DELETED in an account-level list's effective_status (code 100, subcode 1815001; checked 19 Nov 2026).
       if (JSON.stringify(p.effective_status ?? "").includes("DELETED")) return { status: 400, body: { error: { message: "Invalid parameter", code: 100, error_subcode: 1815001 } } };
       const list = this.of(t).filter(this.nameFilter(p)).filter((o) => !p.campaign_id || o.campaign_id === p.campaign_id).map((o) => this.fields(o, p));
@@ -451,7 +461,7 @@ export class MockMeta {
       if (edge === "adimages") {
         const bytes = p.filename as Buffer;
         const hash = createHash("md5").update(bytes).digest("hex");
-        this.add("image", { id: hash, name: "image" });
+        this.add("image", { id: hash, hash, name: typeof p.filename__name === "string" ? p.filename__name : "image" });
         return ok({ images: { file: { hash, url: `https://mock/${hash}.jpg` } } });
       }
       if (edge === "video_ads") {
@@ -497,6 +507,10 @@ export class MockMeta {
       if (edge === "adcreatives") {
         const afs = p.asset_feed_spec as { asset_customization_rules?: unknown[]; bodies?: unknown[] } | undefined;
         if (this.o.rejectPacMultiText && afs?.asset_customization_rules && (afs.bodies?.length ?? 0) > 1) return fail("Invalid parameter: body_label must refer to one body", 100);
+        // Real Meta (20 Nov 2026, validate_only on 1A): one description in an ad with placement rules.
+        if (afs?.asset_customization_rules && ((afs as { descriptions?: unknown[] }).descriptions?.length ?? 0) > 1) {
+          return { status: 400, body: { error: { message: "Invalid parameter", code: 100, error_subcode: 1885878, error_user_title: "Invalid asset count in dynamic creative target rule", error_user_msg: "Multiple descriptions assets cannot be applied to rule no. 1 (priority number if specified, or the index of the rule) in the ad asset feed." } } };
+        }
         const fromPost = !!(p.object_story_id || p.source_instagram_media_id);
         const ossLink = p.object_story_spec as { link_data?: { link?: string }; video_data?: unknown } | undefined;
         const afsAny = p.asset_feed_spec as { optimization_type?: string } | undefined;

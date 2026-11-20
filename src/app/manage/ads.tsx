@@ -24,7 +24,11 @@ export interface AdRow {
   instagramMediaId: string | null;
   primaryTexts: string[];
   headlines: string[];
+  descriptions?: string[];
   link: string | null;
+  button?: string | null;
+  utmTags?: string | null;
+  files?: { kind: "image" | "video"; id: string; name: string | null }[];
 }
 
 type AdOpen = { kind: "copy" | "edit"; id: string } | { kind: "rename" } | null;
@@ -106,7 +110,15 @@ export function AdsList({ adset, tree, submit, busy, quick }: {
             </div>
             {ad.primaryTexts[0] && <div className={s.adText}><span className="muted">Text:</span> {short(ad.primaryTexts[0])}{ad.primaryTexts.length > 1 ? <span className="muted"> (+{ad.primaryTexts.length - 1} more)</span> : null}</div>}
             {ad.headlines[0] && <div className={s.adText}><span className="muted">Headline:</span> {ad.headlines[0]}{ad.headlines.length > 1 ? <span className="muted"> (+{ad.headlines.length - 1} more)</span> : null}</div>}
+            {!!ad.descriptions?.length && <div className={s.adText}><span className="muted">Description:</span> {ad.descriptions[0]}{ad.descriptions.length > 1 ? <span className="muted"> (+{ad.descriptions.length - 1} more)</span> : null}</div>}
+            {(ad.button || !!ad.files?.length) && (
+              <div className={s.adText}>
+                {ad.button && <><span className="muted">Button:</span> {CTA_LIST.find((c) => c.value === ad.button)?.label ?? ad.button.replace(/_/g, " ").toLowerCase()}{ad.files?.length ? " · " : ""}</>}
+                {!!ad.files?.length && <><span className="muted">File:</span> {ad.files.map((f) => f.name ?? `${f.kind} ${f.id}`).join(", ")}</>}
+              </div>
+            )}
             {ad.link && <div className={s.adText}><span className="muted">Link:</span> <a href={ad.link} target="_blank" rel="noopener noreferrer">{short(ad.link, 80)}</a></div>}
+            {ad.utmTags && <div className={s.adText}><span className="muted">UTM tags:</span> {short(ad.utmTags, 120)}</div>}
             {(ad.postId || ad.instagramMediaId) && (
               <div className={s.idLine}>
                 {ad.postId && <CopyId label="Post ID" value={ad.postId} />}
@@ -180,7 +192,7 @@ function EditAdForm({ ad, submit, close }: { ad: AdRow; submit: (input: PlanInpu
   const [name, setName] = useState(ad.name);
   const [texts, setTexts] = useState<string[]>(ad.primaryTexts.length ? ad.primaryTexts : [""]);
   const [heads, setHeads] = useState(ad.headlines.join("\n"));
-  const [desc, setDesc] = useState("");
+  const [descs, setDescs] = useState((ad.descriptions ?? []).join("\n"));
   const [link, setLink] = useState(ad.link ?? "");
   const [display, setDisplay] = useState("");
   const [cta, setCta] = useState("");
@@ -209,7 +221,11 @@ function EditAdForm({ ad, submit, close }: { ad: AdRow; submit: (input: PlanInpu
             if (hl.length > 5) throw new Error("Up to 5 headlines, one per line.");
             e.headlines = hl;
           }
-          if (desc.trim()) e.description = desc.trim();
+          const ds = descs.split("\n").map((t) => t.trim()).filter(Boolean);
+          if (!same(ds, ad.descriptions ?? [])) {
+            if (ds.length > 5) throw new Error("Up to 5 descriptions, one per line.");
+            e.descriptions = ds;
+          }
           if (link.trim() && link.trim() !== (ad.link ?? "")) {
             if (!/^https?:\/\//i.test(link.trim())) throw new Error("The link must start with https://");
             e.link_url = link.trim();
@@ -248,9 +264,14 @@ function EditAdForm({ ad, submit, close }: { ad: AdRow; submit: (input: PlanInpu
               <textarea rows={3} value={heads} onChange={(e) => setHeads(e.target.value)} />
             </label>
           </div>
-          <p className="hint" style={{ marginTop: -6, marginBottom: 12 }}>Several texts or headlines are used only by ads that already have several. Other ads use the first one.</p>
           <div className="row">
-            <label><span>Description (blank = keep)</span><input value={desc} onChange={(e) => setDesc(e.target.value)} /></label>
+            <label className="field">
+              <span>Descriptions (up to 5, one per line; empty removes them)</span>
+              <textarea rows={3} value={descs} onChange={(e) => setDescs(e.target.value)} />
+            </label>
+          </div>
+          <p className="hint" style={{ marginTop: -6, marginBottom: 12 }}>Several texts, headlines or descriptions work only on ads that already have several (Meta refuses them on others, and the plan says so).</p>
+          <div className="row">
             <label><span>Button</span><Select value={cta} onChange={setCta} list={CTA_LIST} blank="Keep as it is" /></label>
           </div>
           <div className="row">

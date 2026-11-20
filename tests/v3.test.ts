@@ -56,7 +56,7 @@ const adsetsIn = (campaignId: string) => mock.of("adset").filter((a) => a.campai
 describe("Copy: several primary texts and headlines (batch zrhtj)", () => {
   it("one file with 2 texts and 2 headlines is a link ad plus text options, so Meta's 'link is required' can't happen", () => {
     const preset = { name: "p", pageId: "p1", pageName: "", igUserId: "ig1", igName: "", enhancements: {}, multiAdvertiser: false };
-    const copy = { primaryTexts: ["one", "two"], headlines: ["A", "B"], description: "d", cta: "LEARN_MORE", linkUrl: "https://warmchain.sahajta.com", utmTemplate: "", displayLink: "warmchain.sahajta.com" };
+    const copy = { primaryTexts: ["one", "two"], headlines: ["A", "B"], descriptions: ["d"], cta: "LEARN_MORE", linkUrl: "https://warmchain.sahajta.com", utmTemplate: "", displayLink: "warmchain.sahajta.com" };
     const c = buildCreative({ name: "n", copy, urlTags: "", preset, assets: [{ kind: "image", slot: null, imageHash: "h" }] }) as { object_story_spec: { link_data: Record<string, unknown> }; asset_feed_spec: { bodies: unknown[]; titles: unknown[]; optimization_type: string } };
     expect(c.object_story_spec.link_data.link).toBe("https://warmchain.sahajta.com");
     expect(c.object_story_spec.link_data.message).toBe("one");
@@ -68,7 +68,7 @@ describe("Copy: several primary texts and headlines (batch zrhtj)", () => {
 
   it("carousel: each file a card with its own headline; Threads profile and partnership go on the creative", () => {
     const preset = { name: "p", pageId: "p1", pageName: "", igUserId: "ig1", igName: "", enhancements: {}, multiAdvertiser: false, threadsUserId: "777", sponsorPageId: "888" };
-    const copy = { primaryTexts: ["one"], headlines: ["Card A", "Card B"], description: "", cta: "LEARN_MORE", linkUrl: "https://x.com", utmTemplate: "" };
+    const copy = { primaryTexts: ["one"], headlines: ["Card A", "Card B"], descriptions: [], cta: "LEARN_MORE", linkUrl: "https://x.com", utmTemplate: "" };
     const c = buildCreative({ name: "n", format: "carousel", copy, urlTags: "", preset, assets: [{ kind: "image", slot: "feed", imageHash: "h1" }, { kind: "image", slot: "feed", imageHash: "h2" }, { kind: "video", slot: "feed", videoId: "v1", thumbnailUrl: "https://t" }] }) as { branded_content_sponsor_page_id: string; object_story_spec: { threads_user_id: string; link_data: { child_attachments: { name: string; image_hash?: string; video_id?: string }[] } } };
     expect(c.branded_content_sponsor_page_id).toBe("888");
     expect(c.object_story_spec.threads_user_id).toBe("777");

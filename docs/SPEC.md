@@ -35,7 +35,7 @@ Choices are remembered per browser (last ad set, copy template, preset), so a re
 | `ad_accounts` | Meta ad account id, name, **encrypted** Meta token from Connect Meta, when it expires, who connected it. The one marked default is in use. |
 | `users` | Allowed people; **encrypted** Google refresh token (read-only Drive). |
 | `api_keys` | SHA-256 of each Claude API key, owner, last use. The key itself is never stored. |
-| `copy_templates` | ≤5 primary texts, ≤5 headlines, description, CTA, link, UTM template. |
+| `copy_templates` | ≤5 primary texts, ≤5 headlines, ≤5 descriptions (`descriptions` JSON; `description` keeps the first, for older versions), CTA, link, UTM template. |
 | `naming_templates` | Ad and ad set name patterns with tokens. |
 | `settings_presets` | Page, Instagram account, enhancements switched ON (all others are sent OFF), multi-advertiser flag. |
 | `campaign_templates` | Objective and special ad categories (`[]` for Sahajta; a client could store `["HOUSING"]`). Used when the tool creates a campaign (test campaign only in v1). |
@@ -91,14 +91,14 @@ Two transports, one tool file (`src/mcp/tools.ts`): the Claude Desktop extension
 
 - Ratio from real pixels: images with sharp (EXIF rotation applied), videos with ffprobe (rotation applied). 3% tolerance. 9:16 → "Stories and Reels". 4:5, 1:1, 16:9 → "Feed and everything else". Other shapes are allowed only as a single-file ad.
 - Group key: folder + file name with ratio words removed (`9x16`, `4x5`, `1x1`, `16x9`, `vertical`, `story`, `reels`, `feed`, `square`, ...). An empty result uses the folder name. Images and videos never share an ad.
-- Errors (block launch): no files, file too big (image 30 MB, video 4 GB), video over 241 min, image under 600 px wide, two files for one placement, image and video in one ad, unknown shape in a multi-file ad, no primary text, more than 5 texts or headlines, text over Meta's limit (body 1024, headline and description 255), missing or malformed link, no campaign / ad set, ad set gone, dynamic creative ad set, no Page.
+- Errors (block launch): no files, file too big (image 30 MB, video 4 GB), video over 241 min, image under 600 px wide, two files for one placement, image and video in one ad, unknown shape in a multi-file ad, no primary text, more than 5 texts, headlines or descriptions, text over Meta's limit (body 1024, headline and description 255), missing or malformed link, no campaign / ad set, ad set gone, dynamic creative ad set, no Page.
 - Warnings (need acceptance): missing vertical or feed version, low resolution, vertical video over 90 s, text over the "See more" length (125 / 40 / 30), no headline, no Instagram account, landing page not loading, skipped files, unknown name or UTM tokens.
 
 ## 7. Meta call sequence per ad (Graph API v26.0)
 
 Every name sent to Meta ends with ` [L:<batch>-<NN>]`. With `NAME_PREFIX=TEST_` it also starts with `TEST_`.
 
-**Once per run:** 3 reads: `GET /act_x/ads`, `/act_x/adcreatives`, `/act_x/adsets` with `filtering=[{field:"name",operator:"CONTAIN",value:"[L:<batch>-"}]`. Objects found are adopted (no new create). If Meta refuses the filter on an edge, the tool lists recent objects (up to 1,000) and matches names itself.
+**Once per run:** `GET /act_x/ads` (and `/act_x/adsets` for a new ad set per ad) with `filtering=[{field:"name",operator:"CONTAIN",value:"[L:<batch>-"}]`; a found ad also gives its creative. Creatives only when a try of one was saved without its ID (each try is saved before it is sent) or after a restore (`deploy/restore.sh` marks unfinished ads): Meta has no name filter on `/act_x/adcreatives` ("Filtering field 'name' with operation 'contain' is not supported", 20 Nov 2026), so the tool lists recent creatives (up to 1,000, 100 a page) and matches names itself. Objects found are adopted (no new create).
 
 **Image, one text and one headline:**
 1. `POST /act_x/adimages` (multipart `filename`) → `images.{name}.hash` (skipped if this file's SHA-256 is cached).
@@ -115,7 +115,7 @@ Every name sent to Meta ends with ` [L:<batch>-<NN>]`. With `NAME_PREFIX=TEST_` 
 Creative uses `object_story_spec.video_data` {video_id, image_url or image_hash, message, title, link_description, call_to_action}.
 If Meta refuses step 1 (system users may not be supported), the run falls back to `POST /act_x/advideos` `upload_phase=start|transfer|finish` (chunks chosen by Meta), and keeps that method for the rest of the run.
 
-**Several texts, one file:** creative uses `object_story_spec` {page_id, instagram_user_id} + `asset_feed_spec` {ad_formats:[SINGLE_IMAGE|SINGLE_VIDEO], images|videos, bodies ≤5, titles ≤5, descriptions, link_urls, call_to_action_types, optimization_type: DEGREES_OF_FREEDOM}.
+**Several texts, one file:** creative uses `object_story_spec` {page_id, instagram_user_id} + `asset_feed_spec` {ad_formats:[SINGLE_IMAGE|SINGLE_VIDEO], images|videos, bodies ≤5, titles ≤5, descriptions ≤5, link_urls, call_to_action_types, optimization_type: DEGREES_OF_FREEDOM}. Several descriptions alone (one text, one headline) also use this form. An ad with a 9:16 and a 4:5 file (placement rules) takes one description: Meta refuses several there (100/1885878, checked with validate_only on 20 Nov 2026), so the first is sent and the preview warns.
 
 **9:16 + 4:5 pair (placement customization), any number of texts:** `asset_feed_spec` with:
 - files labelled `f_vertical` / `f_feed`;
@@ -135,7 +135,7 @@ Not yet confirmed on a live account (see `BLOCKERS.md`). `scripts/real-test.ts` 
 ## 8. No duplicates
 
 1. Keys in names (see §7).
-2. Reconcile at the start of every run (3 reads).
+2. Reconcile at the start of every run (1 read for the ads, 1 more for new ad sets; creatives only after a try without an answer or a restore).
 3. Write-ahead attempts: the database records "attempted" before each create. A retry with an attempt on record looks the object up by its key before creating again.
 4. `X-Client-Idempotent-Key`: a UUID made from the ad key + object kind. A repeated create with the same body returns the first object (Meta is rolling this out). If Meta says the key was used with a different body (`100/1349016`), a new key is used.
 5. Media cache by SHA-256; the video id is saved right after `start`.

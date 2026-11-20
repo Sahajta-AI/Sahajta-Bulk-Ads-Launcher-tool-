@@ -132,7 +132,7 @@ describe("Missed: the web 'Change copy for this ad' editor", () => {
     updateAdOverride(key, two.id, { copy: { format: "carousel" } });
     const o = (await batchView(key)).ads.find((a) => a.id === two.id)!.override as CopyOverride;
     // The body PreviewTable.tsx:37-41 builds from the ad's override (no `format` field):
-    const copy: CopyOverride = { primaryTexts: ["Edited"], headlines: o.headlines ?? [], description: o.description ?? "", linkUrl: o.linkUrl ?? "", displayLink: o.displayLink ?? "", leadFormId: o.leadFormId ?? "", cta: o.cta ?? "" };
+    const copy: CopyOverride = { primaryTexts: ["Edited"], headlines: o.headlines ?? [], descriptions: o.descriptions ?? [], linkUrl: o.linkUrl ?? "", displayLink: o.displayLink ?? "", leadFormId: o.leadFormId ?? "", cta: o.cta ?? "" };
     updateAdOverride(key, two.id, { copy, angle: "" });
     expect(JSON.parse(getAds(batchId).find((a) => a.id === two.id)!.copy_override ?? "{}").format).toBeUndefined();
   }, 60_000);

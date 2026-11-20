@@ -40,7 +40,7 @@ const results: string[] = [];
 const COPY: Copy = {
   primaryTexts: ["TEST primary text one.", "TEST primary text two.", "TEST primary text three.", "TEST primary text four.", "TEST primary text five."],
   headlines: ["TEST headline 1", "TEST headline 2", "TEST headline 3", "TEST headline 4", "TEST headline 5"],
-  description: "TEST description",
+  descriptions: ["TEST description 1", "TEST description 2", "TEST description 3", "TEST description 4", "TEST description 5"],
   cta: "LEARN_MORE",
   linkUrl: process.env.TEST_LINK_URL || "https://sahajta.com",
   utmTemplate: "utm_source=meta&utm_medium=paid&utm_campaign={campaign}&utm_content={creative}",

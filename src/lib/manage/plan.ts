@@ -34,7 +34,8 @@ import {
 } from "./objects";
 import { BID_STRATEGIES, fromMinor, money, OBJECTIVES, toMinor } from "./options";
 import { audienceSummary, createAudience, customerChunks, uploadCustomerChunk, type AudienceOp } from "./audiences";
-import { adEditProblems, describeAdEdit, editAd, readAd, textOptionsProblem, type AdEditSpec } from "./ads";
+import { adEditProblems, describeAdEdit, editAd, pairDescriptionsProblem, readAd, textOptionsProblem, type AdEditSpec } from "./ads";
+import { descriptionsIn } from "../descriptions";
 import { accountHealth, pixelCheck } from "./checks";
 import { dailyEquivalent } from "./budget";
 
@@ -247,7 +248,7 @@ const ADSET_KEYS: Record<keyof AdSetSpec, true> = {
   targeting_expansion: true, dynamic_creative: true, replace_targeting: true,
 };
 const AD_EDIT_KEYS: Record<keyof AdEditSpec, true> = {
-  name: true, status: true, primary_texts: true, headlines: true, description: true, link_url: true, cta: true, display_link: true,
+  name: true, status: true, primary_texts: true, headlines: true, descriptions: true, description: true, link_url: true, cta: true, display_link: true,
   url_tags: true, media_url: true, creative_id: true,
 };
 const keysOf = (r: Record<string, true>) => Object.keys(r);
@@ -385,11 +386,11 @@ export function audienceProblems(op: AudienceOp): string[] {
 
 /** Fields that take a list. A text given alone is never split into letters: the app and Claude's calls
  *  make it a one-item list (service.ts), and the check refuses anything else that is not a list. */
-export const LIST_FIELDS = ["adsets", "campaigns", "ads", "whole_campaigns", "countries", "primary_texts", "headlines", "custom_audiences", "excluded_custom_audiences", "interests", "languages", "block_list_ids", "special_ad_categories"];
+export const LIST_FIELDS = ["adsets", "campaigns", "ads", "whole_campaigns", "countries", "primary_texts", "headlines", "descriptions", "custom_audiences", "excluded_custom_audiences", "interests", "languages", "block_list_ids", "special_ad_categories"];
 
 /** List fields of a step (and of its copies' changes) that are not lists. */
 function notLists(op: Record<string, unknown>): string[] {
-  const bad = (o: Record<string, unknown>, where: string) => LIST_FIELDS.filter((k) => o[k] !== undefined && o[k] !== null && !Array.isArray(o[k])).map((k) => `${where}${k} must be a list, e.g. ${k.includes("campaign") ? '["Campaign name"]' : k === "countries" ? '["IN"]' : k.includes("text") || k === "headlines" ? '["First text"]' : '["as1"]'} (got ${JSON.stringify(o[k])}).`);
+  const bad = (o: Record<string, unknown>, where: string) => LIST_FIELDS.filter((k) => o[k] !== undefined && o[k] !== null && !Array.isArray(o[k])).map((k) => `${where}${k} must be a list, e.g. ${k.includes("campaign") ? '["Campaign name"]' : k === "countries" ? '["IN"]' : k.includes("text") || k === "headlines" || k === "descriptions" ? '["First text"]' : '["as1"]'} (got ${JSON.stringify(o[k])}).`);
   const out = bad(op, "");
   if (Array.isArray(op.changes)) op.changes.forEach((c, j) => c && typeof c === "object" && out.push(...bad(c as Record<string, unknown>, `copy ${j + 1}: `)));
   return out;
@@ -596,7 +597,7 @@ interface Orig { status: string; daily: number | null; lifetime: number | null; 
 interface WCampaign { id: string; name: string; status: string; cbo: boolean; daily: number | null; lifetime: number | null; start: string | null; end: string | null; spendCap?: number | null; objective?: string; bidDefault?: string; special: string[]; virtual: boolean; touched: boolean; involved: boolean; steps: number[]; raises: Raise[]; src?: string; orig?: Orig; planRaise?: boolean }
 interface WAdSet { id: string; name: string; status: string; campaignId: string; daily: number | null; lifetime: number | null; virtual: boolean; touched: boolean; isNew: boolean; steps: number[]; row: Partial<AdSetRow>; ads: string[]; orig?: Orig }
 /** What an ad's creative allows: an existing post (text can't change) and text options (several texts). */
-interface AdLook { name: string; fromPost: boolean; textOptions: boolean }
+interface AdLook { name: string; fromPost: boolean; textOptions: boolean; /** 9:16 + 4:5 files (placement rules): one description only. */ placementRules?: boolean; /** A carousel: one primary text, a headline and a description per card. */ carousel?: boolean; /** Its cards. */ cards?: number }
 interface WAd { id: string; name: string; status: string; adsetId: string; virtual: boolean; sourceAd?: string; look?: AdLook }
 
 class World {
@@ -958,7 +959,7 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
   async function look(adId: string): Promise<AdLook | null> {
     if (!looks.has(adId)) {
       const ad = await readAd(client, adId).catch(notFound);
-      looks.set(adId, ad ? { name: ad.name, fromPost: ad.fromPost, textOptions: !!ad.creative.asset_feed_spec } : null);
+      looks.set(adId, ad ? { name: ad.name, fromPost: ad.fromPost, textOptions: !!ad.creative.asset_feed_spec, placementRules: !!ad.creative.asset_feed_spec?.asset_customization_rules, carousel: Array.isArray(ad.creative.object_story_spec?.link_data?.child_attachments), cards: (ad.creative.object_story_spec?.link_data?.child_attachments as unknown[] | undefined)?.length } : null);
     }
     return looks.get(adId)!;
   }
@@ -1565,7 +1566,7 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
           for (const pr of adEditProblems(op)) err(n, pr);
           // Putting an earlier creative back (an undo) is not a text change: no new creative is made.
           const textChange = changes.some((c) => !c.startsWith("name") && !c.startsWith("status") && !c.startsWith("creative →"));
-          const many = (op.primary_texts?.length ?? 0) > 1 || (op.headlines?.length ?? 0) > 1;
+          const many = (op.primary_texts?.length ?? 0) > 1 || (op.headlines?.length ?? 0) > 1 || (descriptionsIn(op)?.length ?? 0) > 1;
           const missing = await world.preload("ad", ids.filter((id) => !isRef(id)));
           for (const id of missing) err(n, `ad ${id} is not an ad in this ad account (or it was deleted or archived).`);
           const names: string[] = [];
@@ -1582,8 +1583,11 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
             names.push(label);
             if (l?.fromPost && textChange) err(n, `"${label}" runs an existing post, so its text, link and file can't change (that would make a new post and lose its likes and comments). Change the post itself, or make a new ad.`);
             else if (l && many) {
-              const pr = textOptionsProblem(label, l.textOptions, op);
+              const pr = textOptionsProblem(label, l.textOptions, op, !!l.carousel) ?? pairDescriptionsProblem(label, !!l.placementRules, op);
               if (pr) err(n, pr);
+              // A carousel: card N gets headline N and description N; more than its cards are not used.
+              const extra = l.carousel && l.cards ? [(op.headlines?.length ?? 0) > l.cards ? `${op.headlines!.length} headlines` : "", (descriptionsIn(op)?.length ?? 0) > l.cards ? `${descriptionsIn(op)!.length} descriptions` : ""].filter(Boolean) : [];
+              if (!pr && extra.length) warn(n, `"${label}" is a carousel of ${l.cards} cards, so only the first ${l.cards} of the ${extra.join(" and ")} are used (card N gets number N).`);
             }
             if (op.status === "ACTIVE" && w.status !== "ACTIVE") {
               turnOn(`ad "${label}"`, n);

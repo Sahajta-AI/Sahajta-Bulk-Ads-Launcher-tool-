@@ -9,7 +9,7 @@ import { MetaError, metaSaid, plainError } from "../meta/errors";
 import { featureWarnings } from "../meta/features";
 import { getMedia, saveMedia, uploadImage, uploadVideo, videoStatus, videoThumbnail } from "../meta/upload";
 import { READ_COST, WRITE_COST, type Clock } from "../meta/pacer";
-import { adCopy, adPreset, attemptsOf, getAdAssets, getAds, getBatch, logEvent, madeCreative, saveMadeCreative, updateAd, updateBatch } from "../store";
+import { CREATIVE_LOOKUP_MAX, adCopy, adPreset, attemptsOf, getAdAssets, getAds, getBatch, logEvent, lookupsNeeded, madeCreative, saveMadeCreative, updateAd, updateBatch } from "../store";
 import type { AdRow, AssetRow, BatchRow } from "../types";
 import { slotOf } from "./grouping";
 import { extractFrame } from "./media";
@@ -72,18 +72,24 @@ const TAG_RE = /\[L:([a-z0-9]+-\d+)\]/;
 const LIVE_STATUSES = ["ACTIVE", "PAUSED", "PENDING_REVIEW", "DISAPPROVED", "PREAPPROVED", "PENDING_BILLING_INFO", "CAMPAIGN_PAUSED", "ADSET_PAUSED", "IN_PROCESS", "WITH_ISSUES"];
 
 /**
- * List objects on an edge whose name contains `needle`. Uses Meta's name filter; if Meta
- * refuses the filter on that edge (not documented for /adcreatives), lists recent objects
- * and matches here instead.
+ * List objects on an edge whose name contains `needle`. Uses Meta's name filter; for creatives Meta
+ * refuses it ("Filtering field 'name' with operation 'contain' is not supported", 1A, 20 Nov 2026), so
+ * recent creatives are listed and matched here, without first sending a filter Meta refuses (that
+ * call counts against the limit too). Other edges fall back the same way if Meta ever refuses.
  */
 async function listByName<T extends { id: string; name: string }>(client: MetaClient, edge: "ads" | "adsets" | "adcreatives", needle: string, fields = "id,name"): Promise<T[]> {
   const base: Record<string, unknown> = { fields };
   if (edge !== "adcreatives") base.effective_status = LIVE_STATUSES;
+  if (edge === "adcreatives") {
+    const recent = await client.getAll<T>(`${client.accountId}/${edge}`, base, CREATIVE_LOOKUP_MAX);
+    return recent.filter((r) => r.name?.includes(needle));
+  }
   try {
     return await client.getAll<T>(`${client.accountId}/${edge}`, { ...base, filtering: [{ field: "name", operator: "CONTAIN", value: needle }] });
   } catch (e) {
-    if (!(e instanceof MetaError) || e.isTransient) throw e;
-    const recent = await client.getAll<T>(`${client.accountId}/${edge}`, base, 1000);
+    // Only a refused filter (invalid parameter) is worth listing instead; a login or permission error is not.
+    if (!(e instanceof MetaError) || e.isTransient || e.code !== 100) throw e;
+    const recent = await client.getAll<T>(`${client.accountId}/${edge}`, base, CREATIVE_LOOKUP_MAX);
     return recent.filter((r) => r.name?.includes(needle));
   }
 }
@@ -583,13 +589,22 @@ async function advanceAd(deps: LaunchDeps, batch: BatchRow, ad: AdRow): Promise<
 async function reconcile(deps: LaunchDeps, batch: BatchRow) {
   const ads = getAds(batch.id).filter((a) => a.status !== "done");
   if (!ads.length) return;
+  const need = lookupsNeeded(batch, ads);
+  const none = Promise.resolve(new Map() as Found);
   const [foundAds, foundCreatives, foundAdsets] = await Promise.all([
-    findByBatchKey(deps.client, "ads", batch.key, "id,name,creative{id}"),
-    findByBatchKey(deps.client, "adcreatives", batch.key),
-    batch.adset_mode === "new_per_ad" ? findByBatchKey(deps.client, "adsets", batch.key) : Promise.resolve(new Map() as Found),
+    need.ads ? findByBatchKey(deps.client, "ads", batch.key, "id,name,creative{id}") : none,
+    need.creatives ? findByBatchKey(deps.client, "adcreatives", batch.key) : none,
+    need.adsets ? findByBatchKey(deps.client, "adsets", batch.key) : none,
   ]);
   for (const ad of ads) {
     const patch: Record<string, string> = {};
+    // The look-up after a restore is done: later runs look up only what they try.
+    const at = attemptsOf(ad);
+    if (at.restored) {
+      delete at.restored;
+      ad.attempts = JSON.stringify(at);
+      patch.attempts = ad.attempts;
+    }
     const fa = foundAdsets.get(ad.key);
     const fc = foundCreatives.get(ad.key);
     const fd = foundAds.get(ad.key);
@@ -598,9 +613,10 @@ async function reconcile(deps: LaunchDeps, batch: BatchRow) {
     if (fd && !ad.meta_ad_id) patch.meta_ad_id = fd.id;
     // The ad is in Meta: its creative is the one it uses (a creative shared with another ad set carries that ad's key).
     if (fd?.creative?.id && !ad.meta_creative_id && !patch.meta_creative_id) patch.meta_creative_id = fd.creative.id;
-    if (Object.keys(patch).length) {
-      updateAd(ad.id, patch);
-      logEvent(batch.id, ad.id, "info", `Found ${Object.keys(patch).map((k) => k.replace("meta_", "").replace("_id", "")).join(", ")} already in Meta for ${ad.key}; reusing instead of creating again.`);
+    const found = Object.keys(patch).filter((k) => k !== "attempts");
+    if (Object.keys(patch).length) updateAd(ad.id, patch);
+    if (found.length) {
+      logEvent(batch.id, ad.id, "info", `Found ${found.map((k) => k.replace("meta_", "").replace("_id", "")).join(", ")} already in Meta for ${ad.key}; reusing instead of creating again.`);
     }
   }
 }

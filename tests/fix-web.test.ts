@@ -24,7 +24,7 @@ type View = Parameters<typeof summaryKey>[0] & { ads: { id: number; effectiveSta
 function draftView(over: Record<string, unknown> = {}, ads = 3) {
   const settings = {
     campaignId: "c1", campaignName: "C", adsetMode: "existing", adsetId: "as1", adsetName: "A", copyTemplateId: 1,
-    copy: { primaryTexts: ["Hi"], headlines: ["H"], description: "", cta: "LEARN_MORE", linkUrl: "https://example.com", utmTemplate: "" },
+    copy: { primaryTexts: ["Hi"], headlines: ["H"], descriptions: [], cta: "LEARN_MORE", linkUrl: "https://example.com", utmTemplate: "" },
     adNameTemplate: "{creative}", adsetNameTemplate: "{creative}", presetId: 1,
     preset: { name: "P", pageId: "p1", pageName: "Page", igUserId: "", igName: "", enhancements: {}, multiAdvertiser: false },
     angle: "", persona: "", extraAdsets: [], goLive: "paused", goLiveAt: null, ...over,
@@ -91,7 +91,7 @@ describe("W2 Settings → Ad presets: Threads account and partner Page", () => {
 });
 
 describe("W3 Batch page: 'this template was edited' notice", () => {
-  const copy = { primaryTexts: ["Hi"], headlines: ["H"], description: "", cta: "LEARN_MORE", linkUrl: "https://x.in", utmTemplate: "", displayLink: "x.in", leadFormId: "" };
+  const copy = { primaryTexts: ["Hi"], headlines: ["H"], descriptions: [], cta: "LEARN_MORE", linkUrl: "https://x.in", utmTemplate: "", displayLink: "x.in", leadFormId: "" };
   it("notices a changed display link or lead form", () => {
     expect(copyStale({ ...copy, displayLink: "x.in/visit" }, copy)).toBe(true);
     expect(copyStale({ ...copy, leadFormId: "99" }, copy)).toBe(true);
@@ -228,7 +228,7 @@ describe("W7 After launch: change copy and review check", () => {
   });
 
   it("a failed ad's copy has one box per primary text (a text may have line breaks)", () => {
-    const ad = { id: 7, position: 2, override: {}, copy: { primaryTexts: ["Line one\nLine two", "Second"], headlines: ["H"], description: "", cta: "LEARN_MORE", linkUrl: "https://x.in", utmTemplate: "", displayLink: "" } };
+    const ad = { id: 7, position: 2, override: {}, copy: { primaryTexts: ["Line one\nLine two", "Second"], headlines: ["H"], descriptions: [], cta: "LEARN_MORE", linkUrl: "https://x.in", utmTemplate: "", displayLink: "" } };
     const out = html(FailedCopyEditor, { ad: ad as never, tpl: null, batchKey: "k1", busy: "", act: () => {}, onClose: () => {} });
     expect(out.match(/<textarea /g)).toHaveLength(5);
     expect(out).toMatch(/aria-label="Primary text 1"[^>]*>\n?Line one\nLine two<\/textarea>/);
