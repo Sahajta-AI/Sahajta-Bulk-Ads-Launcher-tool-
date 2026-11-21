@@ -41,7 +41,10 @@ describe("15-file Drive-style folder, existing ad set", () => {
     const ads = mock.of("ad");
     expect(ads).toHaveLength(9);
     expect(ads.every((a) => a.status === "PAUSED")).toBe(true);
-    expect(new Set(keysOf(ads.map((a) => a.name))).size).toBe(9);
+    // One ad per creative, and ad names without the launch key (21 Nov 2026: people read ad names in Ads Manager).
+    expect(new Set(ads.map((a) => a.creative_id)).size).toBe(9);
+    expect(ads.every((a) => !String(a.name).includes("[L:"))).toBe(true);
+    expect(keysOf(mock.of("creative").map((c) => c.name)).every(Boolean)).toBe(true);
 
     for (const c of mock.of("creative")) {
       const body = c.body as Record<string, unknown> & { degrees_of_freedom_spec: { creative_features_spec: Record<string, { enroll_status: string }> }; contextual_multi_ads: { enroll_status: string } };
@@ -87,9 +90,10 @@ describe("no duplicates", () => {
     const client2 = new MetaClient({ token: "t", accountId: mock.accountId, version: "v26.0", fetch: mock.fetch, pacer: pacer2, clock });
     const result = await runBatch(batchId, { ...deps, client: client2 });
     expect(result).toEqual({ done: 9, failed: 0 });
-    const keys = keysOf(mock.of("ad").map((a) => a.name));
     expect(mock.of("ad")).toHaveLength(9);
-    expect(new Set(keys).size).toBe(9);
+    // No duplicates: one ad per creative, and every ad is the one the launcher saved.
+    expect(new Set(mock.of("ad").map((a) => a.creative_id)).size).toBe(9);
+    expect(new Set(getAds(batchId).map((a) => a.meta_ad_id))).toEqual(new Set(mock.of("ad").map((a) => a.id)));
     expect(mock.of("creative")).toHaveLength(9);
   });
 

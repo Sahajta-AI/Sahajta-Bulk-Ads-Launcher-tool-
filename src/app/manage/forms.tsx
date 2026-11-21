@@ -416,7 +416,7 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
   const [include, setInclude] = useState<LookupItem[]>([]);
   const [exclude, setExclude] = useState<LookupItem[]>([]);
   const [advantage, setAdvantage] = useState(false);
-  const [placeKind, setPlaceKind] = useState<"advantage" | "manual">("advantage");
+  const [placeKind, setPlaceKind] = useState<"advantage" | "no_an" | "manual">("advantage");
   const [platforms, setPlatforms] = useState<string[]>(["facebook", "instagram"]);
   const [attribution, setAttribution] = useState("");
   const [languages, setLanguages] = useState<LookupItem[]>([]);
@@ -498,6 +498,7 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
         }
         spec.advantage_audience = advantage;
         if (placeKind === "advantage") spec.placements = "advantage";
+        else if (placeKind === "no_an") spec.placements = "advantage_no_audience_network";
         else {
           if (!platforms.length) throw new Error("Pick at least one platform for placements.");
           spec.placements = { platforms };
@@ -633,6 +634,7 @@ export function NewAdSetForm({ tree, options, submit, close, campaignId }: FormP
       <div className={s.section}>Placements</div>
       <div className={s.radios} style={{ marginBottom: 10 }}>
         <label className="check"><input type="radio" checked={placeKind === "advantage"} onChange={() => setPlaceKind("advantage")} />Advantage+ placements (Meta picks)</label>
+        <label className="check"><input type="radio" checked={placeKind === "no_an"} onChange={() => setPlaceKind("no_an")} />Advantage+ without Audience Network</label>
         <label className="check"><input type="radio" checked={placeKind === "manual"} onChange={() => setPlaceKind("manual")} />Pick platforms</label>
       </div>
       {placeKind === "manual" && (

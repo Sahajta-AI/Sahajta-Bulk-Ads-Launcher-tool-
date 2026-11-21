@@ -5,6 +5,7 @@ import { MetaError, RateLimitedError, plainError } from "@/lib/meta/errors";
 import { getAccount } from "@/lib/store";
 import { adState } from "@/lib/manage/ads";
 import { db } from "@/lib/db";
+import { plainNames } from "@/lib/manage/objects";
 
 export const dynamic = "force-dynamic";
 
@@ -36,7 +37,17 @@ type Creative = {
     videos?: { video_id?: string }[];
   };
 };
-type AdRow = { id: string; name: string; status: string; effective_status?: string; creative?: Creative };
+type AdRow = { id: string; name: string; status: string; effective_status?: string; tracking_specs?: Record<string, unknown>[]; creative?: Creative };
+
+/** The website pixels and offline event sets an ad tracks (its tracking_specs). */
+function trackingOf(specs: Record<string, unknown>[] = []) {
+  const has = (t: Record<string, unknown>, type: string) => Array.isArray(t["action.type"]) && (t["action.type"] as string[]).includes(type);
+  const uniq = (l: string[]) => [...new Set(l.map(String))];
+  return {
+    pixels: uniq(specs.filter((t) => has(t, "offsite_conversion") && Array.isArray(t.fb_pixel)).flatMap((t) => t.fb_pixel as string[])),
+    offline: uniq(specs.filter((t) => has(t, "offline_conversion") && Array.isArray(t.dataset)).flatMap((t) => t.dataset as string[])),
+  };
+}
 
 /** The ad's files: image hashes and video IDs, wherever the launcher (or Ads Manager) put them. */
 function filesOf(c: Creative): { images: string[]; videos: string[] } {
@@ -108,7 +119,7 @@ export const GET = route(async (req) => {
   let list: AdRow[];
   try {
     // One more than shown tells whether the list was cut.
-    list = await client.getAll<AdRow>(`${adset}/ads`, { fields: `id,name,status,effective_status,${CREATIVE}`, effective_status: STATUSES, limit: 25 }, MAX_ADS + 1);
+    list = await client.getAll<AdRow>(`${adset}/ads`, { fields: `id,name,status,effective_status,tracking_specs,${CREATIVE}`, effective_status: STATUSES, limit: 25 }, MAX_ADS + 1);
   } catch (e) {
     if (e instanceof MetaError && !(e instanceof RateLimitedError)) throw new HttpError(e.isThrottle ? 429 : 502, plainError(e, "Reading the ads of this ad set"));
     throw e;
@@ -116,6 +127,8 @@ export const GET = route(async (req) => {
   const truncated = list.length > MAX_ADS;
   const shown = list.slice(0, MAX_ADS);
   const files = new Map(shown.map((a) => [a.id, filesOf(a.creative ?? {})]));
+  // Pixel names only when an ad tracks one (cached for an hour); languages aren't shown here.
+  const idNames = shown.some((a) => trackingOf(a.tracking_specs).pixels.length || trackingOf(a.tracking_specs).offline.length) ? await plainNames(client, { locales: false }) : {};
   const names = await fileNames(client, acc.id, [...new Set([...files.values()].flatMap((f) => f.images))], [...new Set([...files.values()].flatMap((f) => f.videos))]);
   return {
     ads: shown.map((a) => {
@@ -148,6 +161,8 @@ export const GET = route(async (req) => {
         button: buttonOf(c),
         // UTM tags added to the link (edit_ad's url_tags).
         utmTags: c.url_tags ?? null,
+        // What the ad tracks: website pixels and offline event sets, named when known.
+        tracking: ((t) => ({ pixels: t.pixels.map((id) => ({ id, name: idNames.pixels?.[id] ?? null })), offline: t.offline.map((id) => ({ id, name: idNames.pixels?.[id] ?? null })) }))(trackingOf(a.tracking_specs)),
         // Each file by name when known, else "image <hash>" / "video <ID>".
         files: [...f.images.map((h) => ({ kind: "image" as const, id: h, name: names.get(h) ?? null })), ...f.videos.map((v) => ({ kind: "video" as const, id: v, name: names.get(v) ?? null }))],
       };

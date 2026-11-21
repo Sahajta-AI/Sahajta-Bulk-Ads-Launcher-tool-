@@ -144,7 +144,7 @@ export default function LaunchStep({ view, dest, patch, summary, summaryError, s
               {" "}· display link {s.copy.displayLink || "none"} · {s.copy.descriptions.length ? `${s.copy.descriptions.length} description${s.copy.descriptions.length === 1 ? "" : "s"}: ${s.copy.descriptions.map((d) => `“${d}”`).join(", ")}` : "description none"}
               {ownLinks > 0 && <div><small>{ownLinks} ad{ownLinks === 1 ? " has its" : "s have their"} own link (shown in the ads table).</small></div>}
             </dd>
-            <dt>Settings</dt><dd>WhatsApp number {s.preset?.whatsappNumber || "none"} · Threads account {s.preset?.threadsUserId || "none"} · branded content partner Page {s.preset?.sponsorPageId || "none"}</dd>
+            <dt>Settings</dt><dd>WhatsApp number {s.preset?.whatsappNumber || "none"} · Threads account {s.preset?.threadsUserId || "none"} · branded content partner Page {s.preset?.sponsorPageId || "none"} · offline event sets {s.preset?.offlineDatasetIds?.join(", ") || "none"}</dd>
             {(l.health ?? []).map((h) => {
               const at = h.indexOf(": ");
               return <Fragment key={h}><dt>{at > 0 ? h.slice(0, at) : "Check"}</dt><dd>{at > 0 ? h.slice(at + 2) : h}</dd></Fragment>;

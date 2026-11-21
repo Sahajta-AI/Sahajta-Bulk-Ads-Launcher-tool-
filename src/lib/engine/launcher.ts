@@ -9,13 +9,13 @@ import { MetaError, metaSaid, plainError } from "../meta/errors";
 import { featureWarnings } from "../meta/features";
 import { getMedia, saveMedia, uploadImage, uploadVideo, videoStatus, videoThumbnail } from "../meta/upload";
 import { READ_COST, WRITE_COST, type Clock } from "../meta/pacer";
-import { CREATIVE_LOOKUP_MAX, adCopy, adPreset, attemptsOf, getAdAssets, getAds, getBatch, logEvent, lookupsNeeded, madeCreative, saveMadeCreative, updateAd, updateBatch } from "../store";
+import { CREATIVE_LOOKUP_MAX, adCopy, adPreset, attemptsOf, batchPreset, getAdAssets, getAds, getBatch, logEvent, lookupsNeeded, madeCreative, saveMadeCreative, updateAd, updateBatch } from "../store";
 import type { AdRow, AssetRow, BatchRow } from "../types";
 import { slotOf } from "./grouping";
 import { extractFrame } from "./media";
-import { keyTag, metaName, renderUtm } from "./naming";
+import { keyTag, metaAdName, metaName, renderUtm } from "./naming";
 import { adNameContext } from "./preview";
-import { adsetCloneParams, getAdSet, getCampaign, isCbo } from "../manage/objects";
+import { adsetCloneParams, getAdSet, getCampaign, isCbo, offlineChecks, plainNames } from "../manage/objects";
 
 // The launch engine. Runs one batch to the end, one Meta call at a time, paced.
 //
@@ -232,13 +232,24 @@ async function createOnce(
   kind: "adset" | "creative" | "ad",
   edge: "ads" | "adsets" | "adcreatives",
   create: (idempotencyKey: string) => Promise<string>,
+  lookup?: () => Promise<string | null>,
 ): Promise<{ id: string; adopted: boolean }> {
-  if (attemptsOf(ad)[kind]) {
+  const a0 = attemptsOf(ad);
+  // An ad: looked for when a try may have made one (not when Meta refused it), or after a restore.
+  const mayExist = kind === "ad" ? (a0.ad ?? 0) > (a0.ad_refused ?? 0) || !!a0.restored_ad : !!a0[kind];
+  if (mayExist) {
     spend(deps, ad, READ_COST);
-    const existing = await findOne(deps.client, edge, ad.key, kind === "creative" ? (n) => creativeMatches(ad, n) : undefined);
+    const existing = lookup ? await lookup() : await findOne(deps.client, edge, ad.key, kind === "creative" ? (n) => creativeMatches(ad, n) : undefined);
     if (existing) return { id: existing, adopted: true };
   }
   bumpAttempt(ad, kind);
+  if (kind === "ad") {
+    // When this try was sent (Meta's own clock is wall time): a later look-up takes only ads made after it.
+    const a1 = attemptsOf(ad);
+    a1.ad_at = Date.now();
+    ad.attempts = JSON.stringify(a1);
+    updateAd(ad.id, { attempts: ad.attempts });
+  }
   spend(deps, ad, WRITE_COST);
   const gen = (attemptsOf(ad)[`${kind}_gen`] ?? 0) + (kind === "creative" ? (attemptsOf(ad).copy_gen ?? 0) * 100 : 0);
   let id: string;
@@ -538,17 +549,33 @@ async function advanceAd(deps: LaunchDeps, batch: BatchRow, ad: AdRow): Promise<
   // 4. Ad, always PAUSED.
   if (!ad.meta_ad_id) {
     setStep(ad, "Creating the ad (paused)");
+    const tracking = await trackingSpecs(deps, batch, ad);
     let res: { id: string; adopted: boolean };
     try {
-      res = await createOnce(deps, ad, "ad", "ads", async (key) => {
-        const r = await client.post<{ id: string }>(
-          `${client.accountId}/ads`,
-          { name: metaName(ad.name || ad.creative_name, ad.key, prefix), adset_id: adsetId, creative: { creative_id: ad.meta_creative_id }, status: "PAUSED" },
-          { idempotencyKey: key },
-        );
-        return r.id;
-      });
+      res = await createOnce(
+        deps,
+        ad,
+        "ad",
+        "ads",
+        async (key) => {
+          const r = await client.post<{ id: string }>(
+            `${client.accountId}/ads`,
+            { name: metaAdName(ad.name || ad.creative_name, prefix), adset_id: adsetId, creative: { creative_id: ad.meta_creative_id }, status: "PAUSED", ...(tracking.length ? { tracking_specs: tracking } : {}) },
+            { idempotencyKey: key },
+          );
+          return r.id;
+        },
+        // A lost answer or a restore: the ad in this ad set on this ad's creative (ads carry no launch key in their name).
+        async () => findOurAd(await adsInAdsets(client, [adsetId!]), batch, ad, adsetId, claimedAdIds(batch.ad_account_id, ad.id))?.id ?? null,
+      );
     } catch (e) {
+      // Meta said no (a clear refusal, not a lost answer): nothing was made, so a Retry need not look for it.
+      if (e instanceof MetaError && !e.isTransient && !e.unknownOutcome) {
+        const a = attemptsOf(ad);
+        a.ad_refused = a.ad ?? 0;
+        ad.attempts = JSON.stringify(a);
+        updateAd(ad.id, { attempts: ad.attempts });
+      }
       // Meta refused the ad with the creative another ad set made: Retry makes this ad its own creative
       // (its own post), so the shared one can't keep it out.
       if (e instanceof MetaError && !e.isTransient && !isAccessError(e) && attemptsOf(ad).creative_shared) {
@@ -565,7 +592,10 @@ async function advanceAd(deps: LaunchDeps, batch: BatchRow, ad: AdRow): Promise<
     }
     const { id, adopted } = res;
     ad.meta_ad_id = id;
-    updateAd(ad.id, { meta_ad_id: id });
+    const done = attemptsOf(ad);
+    delete done.restored_ad;
+    ad.attempts = JSON.stringify(done);
+    updateAd(ad.id, { meta_ad_id: id, attempts: ad.attempts });
     if (adopted) logEvent(batch.id, ad.id, "info", `Found the ad Meta already created for ${ad.key}; reused it.`);
   }
 
@@ -586,44 +616,151 @@ async function advanceAd(deps: LaunchDeps, batch: BatchRow, ad: AdRow): Promise<
 }
 
 /** At the start of every run: adopt anything Meta already has for this batch. */
+type AdInMeta = { id: string; name: string; adset_id?: string; created_time?: string; creative?: { id?: string; name?: string } };
+
+/** The ads in these ad sets (one read for up to 50 ad sets): their ad set and creative, to find ours. */
+async function adsInAdsets(client: MetaClient, adsetIds: string[]): Promise<AdInMeta[]> {
+  const out: AdInMeta[] = [];
+  for (let i = 0; i < adsetIds.length; i += 50) {
+    const part = adsetIds.slice(i, i + 50);
+    out.push(...(await client.getAll<AdInMeta>(`${client.accountId}/ads`, { fields: "id,name,adset_id,created_time,creative{id,name}", effective_status: LIVE_STATUSES, filtering: [{ field: "adset.id", operator: "IN", value: part }] }, 2000)));
+  }
+  return out;
+}
+
+/** The keys of this ad and of the same ad in the other ad sets of its launch (a shared creative carries one of them). */
+function launchKeysAt(batch: BatchRow, position: number): string[] {
+  return db()
+    .prepare("SELECT a.key FROM ads a JOIN batches b ON b.id = a.batch_id WHERE COALESCE(b.group_key, 'batch:' || b.id) = ? AND b.ad_account_id = ? AND a.position = ?")
+    .pluck()
+    .all(batch.group_key ?? `batch:${batch.id}`, batch.ad_account_id, position) as string[];
+}
+
+/**
+ * This ad among the ads of its ad set, which carry no launch key in their name (21 Nov 2026): not an ad the
+ * launcher already knows, in this ad set, made after this ad's last try when that time is known, and then
+ * (1) named with its key (ads made before), (2) on its creative, or (3) on a creative named with its key or
+ * the key of the same ad in another ad set of the launch (found even when the creative is older than the
+ * 1,000 most recent, or after a restore that lost its ID).
+ */
+function findOurAd(rows: AdInMeta[], batch: BatchRow, ad: AdRow, adsetId: string | null, claimed: Set<string>): AdInMeta | undefined {
+  const since = attemptsOf(ad).ad_at;
+  // Without its ad set known there is nothing to match against (never an ad of another ad set).
+  if (!adsetId) return undefined;
+  const ok = (r: AdInMeta) => !claimed.has(r.id) && (!r.adset_id || r.adset_id === adsetId) && (!since || !r.created_time || !(Date.parse(r.created_time) < since - 60_000));
+  const keys = launchKeysAt(batch, ad.position).map(keyTag);
+  return (
+    rows.find((r) => ok(r) && TAG_RE.exec(r.name ?? "")?.[1] === ad.key) ??
+    (ad.meta_creative_id ? rows.find((r) => ok(r) && r.creative?.id === ad.meta_creative_id) : undefined) ??
+    rows.find((r) => ok(r) && keys.some((k) => (r.creative?.name ?? "").includes(k)))
+  );
+}
+
+/** Ads the launcher already knows (any batch of this ad account), never taken for another ad. */
+function claimedAdIds(accountDbId: number, exceptAdId?: number): Set<string> {
+  const rows = db()
+    .prepare("SELECT a.meta_ad_id FROM ads a JOIN batches b ON b.id = a.batch_id WHERE b.ad_account_id = ? AND a.meta_ad_id IS NOT NULL AND a.id != ?")
+    .pluck()
+    .all(accountDbId, exceptAdId ?? -1) as string[];
+  return new Set(rows);
+}
+
+/**
+ * Before creating anything, find what an earlier run made without the launcher knowing (a lost answer,
+ * a crash, a restored database): new ad sets and creatives by the [L:key] in their names; ads (whose
+ * names carry no key since 21 Nov) by their ad set and creative, or by the key for ads made before.
+ * Creatives first, so an ad found after a restore can be matched by its creative.
+ */
 async function reconcile(deps: LaunchDeps, batch: BatchRow) {
   const ads = getAds(batch.id).filter((a) => a.status !== "done");
   if (!ads.length) return;
   const need = lookupsNeeded(batch, ads);
   const none = Promise.resolve(new Map() as Found);
-  const [foundAds, foundCreatives, foundAdsets] = await Promise.all([
-    need.ads ? findByBatchKey(deps.client, "ads", batch.key, "id,name,creative{id}") : none,
+  const [foundCreatives, foundAdsets] = await Promise.all([
     need.creatives ? findByBatchKey(deps.client, "adcreatives", batch.key) : none,
     need.adsets ? findByBatchKey(deps.client, "adsets", batch.key) : none,
   ]);
+  const patches = new Map<number, Record<string, string>>();
+  const patchOf = (ad: AdRow) => patches.get(ad.id) ?? (patches.set(ad.id, {}), patches.get(ad.id)!);
   for (const ad of ads) {
-    const patch: Record<string, string> = {};
-    // The look-up after a restore is done: later runs look up only what they try.
+    const fa = foundAdsets.get(ad.key);
+    const fc = foundCreatives.get(ad.key);
+    if (fa && !ad.meta_adset_id) ad.meta_adset_id = patchOf(ad).meta_adset_id = fa.id;
+    if (fc && !ad.meta_creative_id && creativeMatches(ad, fc.name)) ad.meta_creative_id = patchOf(ad).meta_creative_id = fc.id;
+  }
+  if (need.ads) {
+    const adsetOf = (ad: AdRow) => (batch.adset_mode === "existing" ? batch.adset_id : batch.adset_mode === "new_shared" ? (getBatch(batch.id)?.shared_adset_id ?? null) : ad.meta_adset_id);
+    const adsetIds = [...new Set(ads.filter((a) => !a.meta_ad_id).map(adsetOf).filter((x): x is string => !!x))];
+    if (adsetIds.length) {
+      const rows = await adsInAdsets(deps.client, adsetIds);
+      const claimed = claimedAdIds(batch.ad_account_id);
+      for (const ad of ads) {
+        if (ad.meta_ad_id) continue;
+        const fd = findOurAd(rows, batch, ad, adsetOf(ad), claimed);
+        if (!fd) continue;
+        claimed.add(fd.id);
+        const p = patchOf(ad);
+        ad.meta_ad_id = p.meta_ad_id = fd.id;
+        // The ad is in Meta: its creative is the one it uses (a creative shared with another ad set carries that ad's key).
+        if (fd.creative?.id && !ad.meta_creative_id) ad.meta_creative_id = p.meta_creative_id = fd.creative.id;
+      }
+    }
+  }
+  for (const ad of ads) {
+    // After a restore the creative look-up is done here, once; an ad not found yet keeps "restored_ad", so its
+    // own ad step still looks for it in its ad set before making one (its try may be missing from the backup).
     const at = attemptsOf(ad);
     if (at.restored) {
       delete at.restored;
+      if (!ad.meta_ad_id) at.restored_ad = 1;
       ad.attempts = JSON.stringify(at);
-      patch.attempts = ad.attempts;
+      patchOf(ad).attempts = ad.attempts;
     }
-    const fa = foundAdsets.get(ad.key);
-    const fc = foundCreatives.get(ad.key);
-    const fd = foundAds.get(ad.key);
-    if (fa && !ad.meta_adset_id) patch.meta_adset_id = fa.id;
-    if (fc && !ad.meta_creative_id && creativeMatches(ad, fc.name)) patch.meta_creative_id = fc.id;
-    if (fd && !ad.meta_ad_id) patch.meta_ad_id = fd.id;
-    // The ad is in Meta: its creative is the one it uses (a creative shared with another ad set carries that ad's key).
-    if (fd?.creative?.id && !ad.meta_creative_id && !patch.meta_creative_id) patch.meta_creative_id = fd.creative.id;
+    const patch = patches.get(ad.id);
+    if (!patch) continue;
+    updateAd(ad.id, patch);
     const found = Object.keys(patch).filter((k) => k !== "attempts");
-    if (Object.keys(patch).length) updateAd(ad.id, patch);
-    if (found.length) {
-      logEvent(batch.id, ad.id, "info", `Found ${found.map((k) => k.replace("meta_", "").replace("_id", "")).join(", ")} already in Meta for ${ad.key}; reusing instead of creating again.`);
-    }
+    if (found.length) logEvent(batch.id, ad.id, "info", `Found ${found.map((k) => k.replace("meta_", "").replace("_id", "")).join(", ")} already in Meta for ${ad.key}; reusing instead of creating again.`);
   }
 }
 
 export interface RunResult {
   done: number;
   failed: number;
+}
+
+/**
+ * The ad's tracking, set explicitly (Meta otherwise adds its own default offline event set, as it did on
+ * every Project Uday ad, 21 Nov 2026): the ad set's website pixel and the preset's offline event sets.
+ * Forms checked with Meta's validate_only on 1A, 21 Nov 2026. The pixel is saved on the batch at launch;
+ * a batch launched before that reads it once from its ad set (then saves it). Nothing to set: [] (Meta's own).
+ */
+async function trackingSpecs(deps: LaunchDeps, batch: BatchRow, ad: AdRow): Promise<Record<string, string[]>[]> {
+  let pixel = getBatch(batch.id)?.tracking_pixel;
+  if ((pixel === null || pixel === undefined) && batch.adset_id) {
+    spend(deps, ad, READ_COST);
+    try {
+      const a = await deps.client.get<{ promoted_object?: { pixel_id?: string } }>(batch.adset_id, { fields: "promoted_object" });
+      pixel = a.promoted_object?.pixel_id ? String(a.promoted_object.pixel_id) : "";
+      updateBatch(batch.id, { tracking_pixel: pixel });
+    } catch (e) {
+      // Meta limiting calls or a lost login: the ad waits or stops as usual. Anything else (e.g. the template
+      // ad set of an older batch was deleted): the ad is made with Meta's own tracking, and the batch says so.
+      if (!(e instanceof MetaError) || e.isTransient || isAccessError(e) || e.isThrottle) throw e;
+      pixel = "";
+      updateBatch(batch.id, { tracking_pixel: "" });
+      logEvent(batch.id, ad.id, "warn", `Couldn't read the ad set's pixel (${plainError(e, "Reading the ad set")}), so the ads get Meta's own tracking.`);
+    }
+  }
+  return trackingFor(pixel ?? "", adPreset(batch, ad).offlineDatasetIds ?? []);
+}
+
+/** tracking_specs for a website pixel and offline event sets (empty: nothing to set). */
+export function trackingFor(pixel: string, offline: string[]): Record<string, string[]>[] {
+  return [
+    ...(pixel ? [{ "action.type": ["offsite_conversion"], fb_pixel: [pixel] }] : []),
+    ...(offline.length ? [{ "action.type": ["offline_conversion"], dataset: offline }] : []),
+  ];
 }
 
 /** Run a batch until every ad is done or failed. Safe to call again after a crash. */
@@ -657,6 +794,20 @@ export async function runBatch(batchId: number, deps: LaunchDeps): Promise<RunRe
     }
   }
   deps = { ...deps, waitStart: new Map(), work: new Map() };
+
+  // The preset's offline event sets: a wrong ID makes Meta refuse every ad (and a refused shared creative
+  // would split the posts on Retry), so nothing is sent when one can't be used. Covers a Retry and a preset
+  // changed after a failure, not only the launch. Cached reads: usually none.
+  const offline = batchPreset(batch).offlineDatasetIds ?? [];
+  if (offline.length) {
+    const bad = (await offlineChecks(deps.client, offline, await plainNames(deps.client, { locales: false }))).filter((c) => c.level === "error");
+    if (bad.length) {
+      const rest = getAds(batchId).filter((a) => a.status !== "done");
+      for (const r of rest) updateAd(r.id, { status: "failed", error: bad[0].message, wait_until: null });
+      logEvent(batchId, null, "error", `${bad[0].message} Nothing was created; ${rest.length} ad${rest.length === 1 ? "" : "s"} not created yet.`);
+      return finish(batchId);
+    }
+  }
 
   const tries = new Map<number, number>();
   for (;;) {
@@ -771,11 +922,17 @@ function isAccessError(e: MetaError): boolean {
 
 /** After launch: read each ad's review status and explain problems in plain words. One read per 100 ads. */
 export async function checkReview(client: MetaClient, batchId: number): Promise<{ pending: number }> {
-  const batch = getBatch(batchId)!;
   const ads = getAds(batchId).filter((a) => a.meta_ad_id);
   if (!ads.length) return { pending: 0 };
   type Row = { id: string; name: string; effective_status?: string; ad_review_feedback?: Record<string, unknown>; issues_info?: { error_summary?: string; error_message?: string }[]; creative?: { effective_object_story_id?: string; effective_instagram_media_id?: string } };
-  const rows = await listByName<Row>(client, "ads", `[L:${batch.key}-`, "id,name,effective_status,ad_review_feedback,issues_info,creative{effective_object_story_id,effective_instagram_media_id}");
+  // By the IDs saved at creation (one read per 50 ads): an ad renamed in Ads Manager is still found (21 Nov 2026,
+  // the Project Uday ads were renamed after launch; a search by the launch key in the name would have lost them).
+  const rows: Row[] = [];
+  const ids = ads.map((a) => a.meta_ad_id!);
+  for (let i = 0; i < ids.length; i += 50) {
+    const part = ids.slice(i, i + 50);
+    rows.push(...(await client.getAll<Row>(`${client.accountId}/ads`, { fields: "id,name,effective_status,ad_review_feedback,issues_info,creative{effective_object_story_id,effective_instagram_media_id}", effective_status: LIVE_STATUSES, filtering: [{ field: "id", operator: "IN", value: part }] }, part.length + 10)));
+  }
   const byId = new Map(rows.map((r) => [r.id, r]));
   let pending = 0;
   for (const ad of ads) {

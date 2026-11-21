@@ -32,7 +32,8 @@ export function presetStale(tpl: PresetTpl | undefined, preset: Preset | null | 
     || on(tpl.enhancementsOn ?? []) !== on(Object.keys(preset.enhancements ?? {}))
     || str(tpl.whatsappNumber) !== str(preset.whatsappNumber)
     || str(tpl.threadsUserId) !== str(preset.threadsUserId)
-    || str(tpl.sponsorPageId) !== str(preset.sponsorPageId);
+    || str(tpl.sponsorPageId) !== str(preset.sponsorPageId)
+    || (tpl.offlineDatasetIds ?? []).join() !== (preset.offlineDatasetIds ?? []).join();
 }
 
 /**

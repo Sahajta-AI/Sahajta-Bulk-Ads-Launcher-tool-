@@ -77,6 +77,12 @@ interface PresetRow {
   multi_advertiser: number;
 }
 
+/** "1, 2" → ["1", "2"]; nothing → undefined. */
+const idList = (v: string | undefined | null) => {
+  const l = String(v ?? "").split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+  return l.length ? l : undefined;
+};
+
 export function presetFromRow(r: PresetRow): Preset {
   return {
     id: r.id,
@@ -90,6 +96,7 @@ export function presetFromRow(r: PresetRow): Preset {
     whatsappNumber: (r as PresetRow & { whatsapp_number?: string }).whatsapp_number || undefined,
     threadsUserId: (r as PresetRow & { threads_user_id?: string }).threads_user_id || undefined,
     sponsorPageId: (r as PresetRow & { sponsor_page_id?: string }).sponsor_page_id || undefined,
+    offlineDatasetIds: idList((r as PresetRow & { offline_dataset_ids?: string }).offline_dataset_ids),
   };
 }
 

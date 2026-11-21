@@ -400,10 +400,13 @@ describe("checked and fine: estimate and time left", () => {
     const d = deps(accountId);
     expect(await runBatch(group[0].id, d)).toEqual({ done: 3, failed: 0 });
     // Meta is busy for ad set 2's first ad every time (a refusal would make the Retry give it its own creative).
-    const busyKey = getAds(group[1].id)[0].key;
+    // Ads carry no launch key in their name (21 Nov 2026): that ad is the one on ad 1's creative in ad set 2.
+    const busyCreative = getAds(group[0].id)[0].meta_creative_id!;
+    const busySet = getBatch(group[1].id)!.adset_id!;
     const busy: typeof fetch = async (input, init) => {
       const u = urlOf(input as string);
-      if ((init?.method ?? "GET") === "POST" && u.pathname.endsWith("/ads") && String(init?.body ?? "").includes(busyKey)) {
+      const sent = String(init?.body ?? "");
+      if ((init?.method ?? "GET") === "POST" && u.pathname.endsWith("/ads") && sent.includes(busyCreative) && sent.includes(busySet)) {
         return new Response(JSON.stringify({ error: { message: "Service temporarily unavailable", code: 2, is_transient: true } }), { status: 503, headers: { "content-type": "application/json" } });
       }
       return mock.fetch(input, init);

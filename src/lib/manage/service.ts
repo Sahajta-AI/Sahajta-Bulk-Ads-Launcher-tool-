@@ -6,7 +6,7 @@ import { clientFor } from "../meta/factory";
 import { MetaError, RateLimitedError, plainError } from "../meta/errors";
 import { cacheDelete, cacheGet, cacheSet, getAccount } from "../store";
 import { DEFAULT_COLUMNS, formulaVars, isStandardMetric, metricProblem, parseFormula, readInsights, STANDARD_METRICS, type CustomMetric, type Expr, type InsightsQuery } from "./insights";
-import { accountInfo, ADSET_FIELDS, CAMPAIGN_FIELDS, describeAdSet, describeCampaign, isCbo, lookups, type AdSetRow, type CampaignRow } from "./objects";
+import { accountInfo, ADSET_FIELDS, CAMPAIGN_FIELDS, describeAdSet, describeCampaign, isCbo, lookups, plainNames, type AdSetRow, type CampaignRow } from "./objects";
 import { allOptions, fromMinor } from "./options";
 import { LIST_FIELDS, basisChanged, canon, changedFields, confirmCheck, copiesOf, defaultTitle, getPlan, indiaDate, itemsMade, itemsMaybeOn, keepNotes, madeCount, markChecked, periodMark, refKey, planProgress, planWait, sameAmount, savePlan, stepIdentity, summarise, type Op, type PlanInput, type PlanProgress, type PlanRow, type PlanSummary } from "./plan";
 import { istLabel, timeMs, zonedTime } from "../time";
@@ -45,6 +45,7 @@ export async function campaignTree(refresh = false): Promise<{ currency: string;
   const client = clientFor(acc.id);
   try {
     const { currency } = await accountInfo(client);
+    const names = await plainNames(client);
     const live = ["ACTIVE", "PAUSED", "IN_PROCESS", "WITH_ISSUES", "PENDING_REVIEW", "DISAPPROVED", "PREAPPROVED", "PENDING_BILLING_INFO"];
     const [campaigns, adsets] = await Promise.all([
       client.getAll<CampaignRow>(`${client.accountId}/campaigns`, { fields: CAMPAIGN_FIELDS, effective_status: live }),
@@ -65,7 +66,7 @@ export async function campaignTree(refresh = false): Promise<{ currency: string;
         details: describeCampaign(c, currency),
         adsets: adsets
           .filter((a) => a.campaign_id === c.id)
-          .map((a) => ({ id: a.id, name: a.name, status: a.status, effectiveStatus: a.effective_status ?? a.status, dailyBudget: fromMinor(a.daily_budget, currency), lifetimeBudget: fromMinor(a.lifetime_budget, currency), details: describeAdSet(a, currency) })),
+          .map((a) => ({ id: a.id, name: a.name, status: a.status, effectiveStatus: a.effective_status ?? a.status, dailyBudget: fromMinor(a.daily_budget, currency), lifetimeBudget: fromMinor(a.lifetime_budget, currency), details: describeAdSet(a, currency, names) })),
       })),
     };
     cacheSet(key, out, 2 * 60_000);
@@ -86,7 +87,7 @@ export async function objectDetails(kind: "campaign" | "adset", id: string) {
       return { kind, raw: c, plain: describeCampaign(c, currency), currency };
     }
     const a = await client.get<AdSetRow>(id, { fields: ADSET_FIELDS });
-    return { kind, raw: a, plain: describeAdSet(a, currency), currency };
+    return { kind, raw: a, plain: describeAdSet(a, currency, await plainNames(client)), currency };
   } catch (e) {
     metaFail(e, `Reading ${kind} ${id}`);
   }
@@ -695,6 +696,7 @@ export async function undoPlan(key: string, who: string, source: "app" | "claude
         const e: Record<string, unknown> = { type: "edit_ad", ad: id };
         if (has("name") && b.name) e.name = b.name;
         if (has("creative_id") && b.creative_id) e.creative_id = b.creative_id;
+        if (has("tracking_specs") && Array.isArray(b.tracking_specs)) e.tracking_specs = b.tracking_specs;
         if (has("status") && (b.status === "ACTIVE" || b.status === "PAUSED")) e.status = b.status;
         if (Object.keys(e).length > 2) ops.push(e as Op);
       } else if (op.type === "set_status" && b.status && b.status !== op.status && (b.status === "ACTIVE" || b.status === "PAUSED")) {

@@ -39,6 +39,8 @@ export interface Preset {
   threadsUserId?: string;
   /** Partnership ad: the partner's Facebook Page ID (shows "Paid partnership"; the Page needs a linked Instagram account). */
   sponsorPageId?: string;
+  /** Offline event sets (dataset IDs) tracked on each ad, besides the ad set's website pixel. Empty: none. */
+  offlineDatasetIds?: string[];
 }
 
 export interface Check {
@@ -146,6 +148,8 @@ export interface BatchRow {
   /** "Now": a Retry came more than an hour after the run before it ended (that end time). The yes given
    *  at launch then no longer turns the ads on by itself (kept, also after later Retries). */
   late_retry_from: string | null;
+  /** The ad set's website pixel, saved when the launch is confirmed, sent as each ad's tracking; '' = the ad set has none; null/absent = not known yet (the run reads it). */
+  tracking_pixel?: string | null;
 }
 
 export interface AdAccountRow {

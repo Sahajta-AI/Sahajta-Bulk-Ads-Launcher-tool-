@@ -103,7 +103,7 @@ const SAMPLE: Record<string, unknown> = {
   page_id: "p1", app_id: "1", app_store_url: "https://example.com/app", whatsapp_number: "+919812345678", saved_audience_id: "1", countries: ["IN"], regions: [], cities: [], age_min: 25, age_max: 45,
   genders: "all", interests: [], custom_audiences: [], excluded_custom_audiences: [], advantage_audience: false, placements: "advantage", targeting: {}, attribution: "7d_click_1d_view",
   min_daily_spend: 100, max_daily_spend: 900, schedule: [], frequency_cap: { impressions: 2, days: 7 }, inventory_filter: "moderate", block_list_ids: [], languages: [], targeting_expansion: true,
-  dynamic_creative: false, replace_targeting: {}, primary_texts: ["T"], headlines: ["H"], descriptions: ["D1", "D2"], description: "D", link_url: "https://example.com", cta: "LEARN_MORE", display_link: "sahajta.com",
+  dynamic_creative: false, replace_targeting: {}, primary_texts: ["T"], headlines: ["H"], descriptions: ["D1", "D2"], description: "D", tracking_pixels: ["111222333444555"], tracking_offline: [], link_url: "https://example.com", cta: "LEARN_MORE", display_link: "sahajta.com",
   url_tags: "utm_source=meta", media_url: "https://drive.google.com/file/d/x/view", creative_id: "1", post_id: "p1_123", source: "facebook", adsets: ["as1"], instagram_user_id: "ig1",
   campaigns: [], ads: [], whole_campaigns: [], source_audience: "123", country: "IN", size_percent: 1,
 };

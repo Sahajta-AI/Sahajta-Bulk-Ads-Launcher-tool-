@@ -28,6 +28,7 @@ export interface AdRow {
   link: string | null;
   button?: string | null;
   utmTags?: string | null;
+  tracking?: { pixels: { id: string; name: string | null }[]; offline: { id: string; name: string | null }[] };
   files?: { kind: "image" | "video"; id: string; name: string | null }[];
 }
 
@@ -119,6 +120,11 @@ export function AdsList({ adset, tree, submit, busy, quick }: {
             )}
             {ad.link && <div className={s.adText}><span className="muted">Link:</span> <a href={ad.link} target="_blank" rel="noopener noreferrer">{short(ad.link, 80)}</a></div>}
             {ad.utmTags && <div className={s.adText}><span className="muted">UTM tags:</span> {short(ad.utmTags, 120)}</div>}
+            {ad.tracking && (
+              <div className={s.adText}>
+                <span className="muted">Tracking:</span> website pixel {ad.tracking.pixels.map((p) => p.name ?? p.id).join(", ") || "none"} · offline event sets {ad.tracking.offline.map((p) => p.name ?? p.id).join(", ") || "none"}
+              </div>
+            )}
             {(ad.postId || ad.instagramMediaId) && (
               <div className={s.idLine}>
                 {ad.postId && <CopyId label="Post ID" value={ad.postId} />}
@@ -291,10 +297,14 @@ function EditAdForm({ ad, submit, close }: { ad: AdRow; submit: (input: PlanInpu
   );
 }
 
-/** "{adset}_{n}" → "Mumbai_25-45_01", "Mumbai_25-45_02", … in the order the ads are listed. */
-function renderName(pattern: string, adsetName: string, i: number, count: number): string {
-  const n = String(i + 1).padStart(Math.max(2, String(count).length), "0");
-  return pattern.split("{adset}").join(adsetName).split("{n}").join(n).trim();
+/** "{adset}_{n}" → "Mumbai_25-45_01", "Mumbai_25-45_02", … in the order the ads are listed; {n:1} → 1, 2, …; {n:3} → 001, 002, … */
+export function renderName(pattern: string, adsetName: string, i: number, count: number): string {
+  const n = (width: number) => String(i + 1).padStart(width, "0");
+  return pattern
+    .split("{adset}").join(adsetName)
+    .replace(/\{n:([1-6])\}/g, (_, w: string) => n(Number(w)))
+    .split("{n}").join(n(Math.max(2, String(count).length)))
+    .trim();
 }
 
 function RenameForm({ adset, ads, submit, close }: { adset: TreeAdSet; ads: AdRow[]; submit: (input: PlanInput) => Promise<void>; close: () => void }) {
@@ -307,7 +317,7 @@ function RenameForm({ adset, ads, submit, close }: { adset: TreeAdSet; ads: AdRo
       onSubmit={async () => {
         if (!ads.length) throw new Error("Tick the ads to rename.");
         if (!pattern.trim()) throw new Error("Type a name pattern, like {adset}_{n}.");
-        if (ads.length > 1 && !pattern.includes("{n}")) throw new Error("Add {n} to the pattern so each ad gets its own name.");
+        if (ads.length > 1 && !/\{n(:[1-6])?\}/.test(pattern)) throw new Error("Add {n} (or {n:1}) to the pattern so each ad gets its own name.");
         if (names.some((n) => !n)) throw new Error("The pattern makes an empty name.");
         const ops: Op[] = ads.map((a, i) => ({ type: "edit_ad", ad: a.id, name: names[i] }));
         await submit({ title: `Rename ${ads.length} ad${ads.length === 1 ? "" : "s"} in "${adset.name}"`, ops });
@@ -317,7 +327,7 @@ function RenameForm({ adset, ads, submit, close }: { adset: TreeAdSet; ads: AdRo
         <label><span>Name pattern</span><input value={pattern} onChange={(e) => setPattern(e.target.value)} /></label>
       </div>
       <p className="hint" style={{ marginTop: -6, marginBottom: 8 }}>
-        <code>{"{adset}"}</code> = the ad set name, <code>{"{n}"}</code> = 01, 02, 03… in the order shown above.
+        <code>{"{adset}"}</code> = the ad set name, <code>{"{n}"}</code> = 01, 02, 03… in the order shown above (<code>{"{n:1}"}</code> = 1, 2, 3…).
       </p>
       {ads.length > 0 ? (
         <ul className={s.stepLines}>

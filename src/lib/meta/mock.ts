@@ -408,6 +408,8 @@ export class MockMeta {
 
     if (path === "search" && method === "GET") {
       if (p.type === "adinterest") return ok({ data: [{ id: "6003", name: `Real estate (${String(p.q)})`, audience_size_lower_bound: 1000000 }] });
+      // Meta's languages (keys checked on 1A, 21 Nov 2026: 6 = English (US), 24 = English (UK)).
+      if (p.type === "adlocale") return ok({ data: [{ key: 6, name: "English (US)" }, { key: 24, name: "English (UK)" }].filter((l) => l.name.toLowerCase().includes(String(p.q ?? "").toLowerCase())) });
       return ok({ data: [{ key: "1234", name: String(p.q), type: "city", country_code: "IN" }] });
     }
     if (first === act && method === "GET" && edge === "generatepreviews") {
@@ -534,10 +536,9 @@ export class MockMeta {
       if (edge === "ads") {
         if (p.status !== "PAUSED" && !this.o.allowActive) throw new Error(`TEST GUARD: ad created with status ${String(p.status)}`);
         const cr = this.objects.get((p.creative as { creative_id: string }).creative_id);
-        // A launch names its ads with its key; a new ad on a creative another ad already uses (a copied ad
-        // on the same post) is not a launch.
-        const reused = this.of("ad").some((a) => a.creative_id === (p.creative as { creative_id?: string } | undefined)?.creative_id);
-        if (!reused && !cr?.object_story_id && !(cr?.body as { source_instagram_media_id?: string } | undefined)?.source_instagram_media_id && !String(p.name ?? "").includes("[L:")) return fail("Test guard: ad name has no launch key");
+        // Ads carry no launch key in their name since 21 Nov 2026 (the launcher finds them by ad set and
+        // creative); their creative must still be one a launch or a plan made (or a post).
+        void cr;
         const adset = this.objects.get(String(p.adset_id));
         if (!adset) return fail("Ad set does not exist");
         const creativeId = (p.creative as { creative_id: string }).creative_id;
@@ -547,7 +548,7 @@ export class MockMeta {
           return { status: 400, body: { error: { message: "Invalid parameter", code: 100, error_user_title: "Instant form required", error_user_msg: "This ad set uses instant forms. Add an instant form (lead form) to the ad's call to action." } } };
         }
         const id = this.newId();
-        this.add("ad", { id, name: String(p.name), adset_id: String(p.adset_id), creative_id: creativeId, status: String(p.status), effective_status: "PENDING_REVIEW", created_time: this.madeNow() });
+        this.add("ad", { id, name: String(p.name), adset_id: String(p.adset_id), creative_id: creativeId, status: String(p.status), effective_status: "PENDING_REVIEW", created_time: this.madeNow(), ...(p.tracking_specs ? { tracking_specs: typeof p.tracking_specs === "string" ? JSON.parse(p.tracking_specs) : p.tracking_specs } : {}) });
         return ok({ id });
       }
       if (edge === "customaudiences") {
@@ -678,6 +679,7 @@ export class MockMeta {
       }
       if ((p.execution_options as string[] | undefined)?.includes("validate_only")) return ok({ success: true });
       const { execution_options: _e, creative, ...rest } = p;
+      if (typeof rest.tracking_specs === "string") rest.tracking_specs = JSON.parse(rest.tracking_specs);
       Object.assign(obj, rest);
       if ((creative as { creative_id?: string } | undefined)?.creative_id) {
         if (!this.objects.get(String((creative as { creative_id: string }).creative_id))) return fail("Creative does not exist");

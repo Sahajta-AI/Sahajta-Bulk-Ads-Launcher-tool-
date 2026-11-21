@@ -1,8 +1,9 @@
 import type { MetaClient } from "../meta/client";
-import { mustSurface } from "../meta/errors";
+import { MetaError, mustSurface, plainError } from "../meta/errors";
+import type { Check } from "../types";
 import { cacheGet, cacheSet } from "../store";
 import { istLabel, zonedTime } from "../time";
-import { attributionSpec, BID_STRATEGIES, DESTINATIONS, fromMinor, GOALS, label, money, OBJECTIVES, PIXEL_EVENTS, toMinor } from "./options";
+import { attributionSpec, BID_STRATEGIES, DESTINATIONS, fromMinor, GOALS, label, money, NO_AUDIENCE_NETWORK, OBJECTIVES, PIXEL_EVENTS, PLACEMENT_PLATFORMS, toMinor } from "./options";
 
 // Campaigns and ad sets: read them, turn plain settings into Meta's fields, and describe them
 // in plain words for the pre-launch summary.
@@ -73,6 +74,7 @@ export type Targeting = Record<string, unknown> & {
   messenger_positions?: string[];
   audience_network_positions?: string[];
   threads_positions?: string[];
+  whatsapp_positions?: string[];
   device_platforms?: string[];
   locales?: number[];
   excluded_publisher_list_ids?: string[];
@@ -112,8 +114,8 @@ export interface AdSetSpec {
   custom_audiences?: (string | { id: string; name?: string })[];
   excluded_custom_audiences?: (string | { id: string; name?: string })[];
   advantage_audience?: boolean;
-  /** "advantage" (Meta picks) or a list of positions per platform. */
-  placements?: "advantage" | { platforms?: string[]; facebook_positions?: string[]; instagram_positions?: string[]; messenger_positions?: string[]; audience_network_positions?: string[]; threads_positions?: string[] };
+  /** "advantage" (Meta picks), "advantage_no_audience_network" (every platform but Audience Network, Meta picks the positions), or platforms and positions. */
+  placements?: "advantage" | "advantage_no_audience_network" | { platforms?: string[]; facebook_positions?: string[]; instagram_positions?: string[]; messenger_positions?: string[]; audience_network_positions?: string[]; threads_positions?: string[]; whatsapp_positions?: string[] };
   /** Raw Meta targeting, merged last (for anything the fields above don't cover). */
   targeting?: Record<string, unknown>;
   attribution?: string;
@@ -163,6 +165,76 @@ export interface CampaignSpec {
 
 const ids = (list: (string | { id?: string; key?: string })[] | undefined, k: "id" | "key" = "id") =>
   (list ?? []).map((x) => (typeof x === "string" ? { [k]: x } : x)) as { id: string; key: string; name?: string }[];
+
+/** Names for IDs in plain words: pixels (by ID) and languages (Meta's locale keys). Empty when unknown. */
+export interface PlainNames {
+  pixels?: Record<string, string>;
+  locales?: Record<string, string>;
+}
+
+/**
+ * The ad account's pixel names (cached for an hour) and Meta's language names (cached for a day), so a
+ * summary can say "Custom event: QualifiedAfterCall on pixel "Sahajta AI"" and "English (US)" instead of
+ * IDs. At most 2 reads, usually none. A failed read gives no names; the summary then shows the IDs.
+ */
+export async function plainNames(client: MetaClient, opts: { locales?: boolean } = {}): Promise<PlainNames> {
+  // Names are extra: a failed read (Meta limiting calls included) never fails a summary or a list, and is
+  // not asked again for 10 minutes (on the starter tier every call counts).
+  const read = async (key: string, ttl: number, get: () => Promise<Record<string, string>>): Promise<Record<string, string> | undefined> => {
+    const hit = cacheGet<Record<string, string> | { failed: true }>(key);
+    if (hit) return "failed" in hit ? undefined : (hit as Record<string, string>);
+    try {
+      const v = await get();
+      cacheSet(key, v, ttl);
+      return v;
+    } catch {
+      cacheSet(key, { failed: true }, 10 * 60_000);
+      return undefined;
+    }
+  };
+  const out: PlainNames = {};
+  out.pixels = await read(`names:pixels:${client.accountId}`, 3_600_000, async () => {
+    const list = await client.getAll<{ id: string; name?: string }>(`${client.accountId}/adspixels`, { fields: "id,name" });
+    return Object.fromEntries(list.filter((x) => x.name).map((x) => [x.id, x.name!]));
+  });
+  if (opts.locales === false) return out;
+  out.locales = await read("names:locales", 86_400_000, async () => {
+    const r = await client.get<{ data?: { key: number | string; name?: string }[] }>("search", { type: "adlocale", q: "", limit: 1000 });
+    return Object.fromEntries((r.data ?? []).filter((x) => x.name).map((x) => [String(x.key), x.name!]));
+  });
+  return out;
+}
+
+/**
+ * The preset's offline event sets, checked before any launch and at the start of every run (Retry and a
+ * preset changed after a failure included): a wrong ID makes Meta refuse every ad. One read per set the ad account's pixel list doesn't name, cached for an hour.
+ */
+export async function offlineChecks(client: MetaClient, offline: string[], names: PlainNames): Promise<Check[]> {
+  const out: Check[] = [];
+  for (const id of offline) {
+    if (names.pixels?.[id]) continue;
+    const key = `dataset:${client.accountId}:${id}`;
+    let state = cacheGet<"ok" | "bad">(key);
+    if (!state) {
+      try {
+        await client.get(id, { fields: "id,name" });
+        state = "ok";
+      } catch (e) {
+        if (mustSurface(e) || (e instanceof MetaError && e.isTransient)) {
+          out.push({ level: "warning", code: "offline_unchecked", message: `Couldn't check the offline event set ${id} just now (${plainError(e, "Reading it")}). If its ID is wrong, Meta refuses every ad.` });
+          continue;
+        }
+        state = "bad";
+      }
+      cacheSet(key, state, 3_600_000);
+    }
+    if (state === "bad") out.push({ level: "error", code: "offline_unknown", message: `The settings preset tracks offline event set ${id}, which this ad account can't use (wrong ID, or no access). Meta would refuse every ad. Fix the ID in the preset (Settings → Ad presets), or remove it.` });
+  }
+  return out;
+}
+
+/** "English (US)" for 6; "language 6" when the name isn't known. */
+export const localeName = (key: number | string, names?: PlainNames) => names?.locales?.[String(key)] ?? `language ${key}`;
 
 /** The ad account's currency and time zone (cached for a day). */
 export async function accountInfo(client: MetaClient): Promise<{ currency: string; timezone: string; name: string }> {
@@ -251,12 +323,15 @@ export function buildTargeting(spec: AdSetSpec, base: Targeting = {}, savedAudie
   if (spec.excluded_custom_audiences) t.excluded_custom_audiences = ids(spec.excluded_custom_audiences).map((a) => ({ id: a.id }));
   if (spec.advantage_audience !== undefined) t.targeting_automation = { ...(t.targeting_automation ?? {}), advantage_audience: spec.advantage_audience ? 1 : 0 };
   if (t.targeting_automation?.advantage_audience === undefined) t.targeting_automation = { ...(t.targeting_automation ?? {}), advantage_audience: 0 };
-  if (spec.placements) {
-    for (const k of ["publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions", "device_platforms"]) delete t[k];
-    if (spec.placements !== "advantage") {
+  // An unknown word (refused by the plan check) changes nothing here, rather than meaning "all placements".
+  const knownPlacements = spec.placements && (typeof spec.placements !== "string" || spec.placements === "advantage" || spec.placements === "advantage_no_audience_network");
+  if (knownPlacements && spec.placements) {
+    for (const k of ["publisher_platforms", "facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions", "whatsapp_positions", "device_platforms"]) delete t[k];
+    if (spec.placements === "advantage_no_audience_network") t.publisher_platforms = [...NO_AUDIENCE_NETWORK];
+    else if (spec.placements !== "advantage") {
       const pl = spec.placements;
       if (pl.platforms?.length) t.publisher_platforms = pl.platforms;
-      for (const k of ["facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions"] as const) if (pl[k]?.length) t[k] = pl[k];
+      for (const k of POSITION_KEYS) if (pl[k]?.length) t[k] = pl[k];
     }
   }
   if (spec.languages) {
@@ -372,7 +447,27 @@ export function adsetCloneParams(src: AdSetRow, campaignId: string, name: string
 
 // ---------- Plain words ----------
 
-export function describeTargeting(t: Targeting | undefined): { audience: string; placements: string } {
+const POSITION_KEYS = ["facebook_positions", "instagram_positions", "messenger_positions", "audience_network_positions", "threads_positions", "whatsapp_positions"] as const;
+const PLATFORM_WORDS: Record<string, string> = { facebook: "Facebook", instagram: "Instagram", messenger: "Messenger", audience_network: "Audience Network", threads: "Threads", whatsapp: "WhatsApp" };
+
+/**
+ * Placements platform by platform, so nothing is a surprise after launch: "Facebook (feed, story) · Instagram
+ * (all positions) · WhatsApp (status)", "Advantage+ without Audience Network: …", or "Advantage+ placements:
+ * Meta picks among …".
+ */
+export function placementsText(t: Targeting | undefined): string {
+  const all = PLACEMENT_PLATFORMS.map((p) => PLATFORM_WORDS[p.value] ?? p.label);
+  const platforms = t?.publisher_platforms ?? [];
+  if (!platforms.length) return `Advantage+ placements: Meta picks among ${all.join(", ")}`;
+  const each = platforms.map((p) => {
+    const pos = t?.[`${p}_positions` as (typeof POSITION_KEYS)[number]] as string[] | undefined;
+    return `${PLATFORM_WORDS[p] ?? p} (${pos?.length ? pos.map((x) => x.replace(/_/g, " ")).join(", ") : "all positions"})`;
+  });
+  const noAN = !platforms.includes("audience_network") && NO_AUDIENCE_NETWORK.every((p) => platforms.includes(p)) && POSITION_KEYS.every((k) => !(t?.[k] as string[] | undefined)?.length);
+  return `${noAN ? "Advantage+ without Audience Network: " : ""}${each.join(" · ")}`;
+}
+
+export function describeTargeting(t: Targeting | undefined, names?: PlainNames): { audience: string; placements: string } {
   if (!t) return { audience: "Not set", placements: "Advantage+ placements" };
   const g = t.geo_locations ?? {};
   const where = [
@@ -387,12 +482,9 @@ export function describeTargeting(t: Targeting | undefined): { audience: string;
   if (interests.length) parts.push(`interests: ${interests.slice(0, 6).map((i) => i.name ?? i.id).join(", ")}${interests.length > 6 ? ` +${interests.length - 6}` : ""}`);
   if (t.custom_audiences?.length) parts.push(`${t.custom_audiences.length} custom/lookalike audience${t.custom_audiences.length > 1 ? "s" : ""}: ${t.custom_audiences.map((a) => a.name ?? a.id).join(", ")}`);
   if (t.excluded_custom_audiences?.length) parts.push(`excluding ${t.excluded_custom_audiences.map((a) => a.name ?? a.id).join(", ")}`);
-  if (t.locales?.length) parts.push(`language${t.locales.length > 1 ? "s" : ""} ${t.locales.join(", ")}`);
+  if (t.locales?.length) parts.push(`language${t.locales.length > 1 ? "s" : ""} ${t.locales.map((k) => localeName(k, names).replace(/^language /, "")).join(", ")}`);
   parts.push(`Advantage+ audience ${t.targeting_automation?.advantage_audience ? "on" : "off"}`);
-  const pl = t.publisher_platforms?.length
-    ? [t.publisher_platforms.join(" + "), ...["facebook_positions", "instagram_positions"].filter((k) => (t[k] as string[] | undefined)?.length).map((k) => `${k.split("_")[0]}: ${(t[k] as string[]).join(", ")}`)].join("; ")
-    : "Advantage+ placements (all)";
-  return { audience: parts.join(" · "), placements: pl };
+  return { audience: parts.join(" · "), placements: placementsText(t) };
 }
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -401,7 +493,7 @@ const FILTER_WORDS: Record<string, string> = { RELAXED: "expanded inventory", ST
 
 /** The extra ad set settings in plain words (only those that are set): hours, attribution, languages,
  *  brand safety, Dynamic creative and frequency cap. */
-export function adsetExtras(a: Partial<AdSetRow>): Record<string, string> {
+export function adsetExtras(a: Partial<AdSetRow>, names?: PlainNames): Record<string, string> {
   const out: Record<string, string> = {};
   if (a.adset_schedule?.length) {
     out.hours = `runs only ${a.adset_schedule.map((w) => `${(w.days ?? []).map((d) => DAY_NAMES[d] ?? d).join(", ")} ${hhmm(w.start_minute)}–${hhmm(w.end_minute)}`).join("; ")} (ad account time)`;
@@ -411,7 +503,7 @@ export function adsetExtras(a: Partial<AdSetRow>): Record<string, string> {
     out.attribution = [by.CLICK_THROUGH ? `${by.CLICK_THROUGH}-day click` : "", by.VIEW_THROUGH ? `${by.VIEW_THROUGH}-day view` : "", by.ENGAGED_VIDEO_VIEW ? `${by.ENGAGED_VIDEO_VIEW}-day engaged view` : ""].filter(Boolean).join(" or ") + " attribution";
   }
   const t = a.targeting;
-  if (t?.locales?.length) out.languages = `language IDs ${t.locales.join(", ")}`;
+  if (t?.locales?.length) out.languages = `language${t.locales.length > 1 ? "s" : ""}: ${t.locales.map((k) => (names?.locales?.[String(k)] ? `${names.locales[String(k)]} (${k})` : `ID ${k}`)).join(", ")}`;
   const safety: string[] = [];
   const level = a.brand_safety_content_filter_levels?.[0]?.split("_")[1];
   if (level) safety.push(FILTER_WORDS[level] ?? level.toLowerCase());
@@ -436,15 +528,20 @@ export function spendLimitsText(a: Partial<AdSetRow>, currency: string): string 
   return [pair(amount(a.daily_min_spend_target), amount(a.daily_spend_cap), "a day"), pair(amount(a.lifetime_min_spend_target), amount(a.lifetime_spend_cap), "lifetime")].filter(Boolean).join("; ");
 }
 
-export function describeAdSet(a: Partial<AdSetRow>, currency: string): Record<string, string> {
+export function describeAdSet(a: Partial<AdSetRow>, currency: string, names?: PlainNames): Record<string, string> {
   const daily = fromMinor(a.daily_budget, currency);
   const life = fromMinor(a.lifetime_budget, currency);
-  const t = describeTargeting(a.targeting);
+  const t = describeTargeting(a.targeting, names);
   const po = a.promoted_object ?? {};
-  const event = po.custom_event_type ? label(PIXEL_EVENTS, String(po.custom_event_type)) : po.custom_conversion_id ? `custom conversion ${String(po.custom_conversion_id)}` : "";
+  // A custom event is named (the event the ad set optimises for must never be a surprise), and the pixel too.
+  const customEvent = String(po.custom_event_type ?? "") === "OTHER" && po.custom_event_str ? `Custom event: ${String(po.custom_event_str)}` : "";
+  const eventName = customEvent || (po.custom_event_type ? label(PIXEL_EVENTS, String(po.custom_event_type)) : po.custom_conversion_id ? `custom conversion ${String(po.custom_conversion_id)}` : "");
+  const pixelId = po.pixel_id ? String(po.pixel_id) : "";
+  const pixel = pixelId ? (names?.pixels?.[pixelId] ? `pixel "${names.pixels[pixelId]}" (${pixelId})` : `pixel ${pixelId}`) : "";
+  const event = [eventName, pixel].filter(Boolean).join(" on ");
   const limits = spendLimitsText(a, currency);
   return {
-    ...adsetExtras(a),
+    ...adsetExtras(a, names),
     budget: daily ? `${money(daily, currency)} a day` : life ? `${money(life, currency)} lifetime` : "campaign budget",
     // Only when set: the ad set's minimum and maximum spend.
     ...(limits ? { spendLimits: limits } : {}),

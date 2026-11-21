@@ -31,6 +31,7 @@ import {
   type CampaignRow,
   type CampaignSpec,
   type Targeting,
+  plainNames,
 } from "./objects";
 import { BID_STRATEGIES, fromMinor, money, OBJECTIVES, toMinor } from "./options";
 import { audienceSummary, createAudience, customerChunks, uploadCustomerChunk, type AudienceOp } from "./audiences";
@@ -249,7 +250,7 @@ const ADSET_KEYS: Record<keyof AdSetSpec, true> = {
 };
 const AD_EDIT_KEYS: Record<keyof AdEditSpec, true> = {
   name: true, status: true, primary_texts: true, headlines: true, descriptions: true, description: true, link_url: true, cta: true, display_link: true,
-  url_tags: true, media_url: true, creative_id: true,
+  url_tags: true, media_url: true, creative_id: true, tracking_pixels: true, tracking_offline: true, tracking_specs: true,
 };
 const keysOf = (r: Record<string, true>) => Object.keys(r);
 /** "ref" is taken on every step (steps that make nothing just don't use it). */
@@ -386,7 +387,7 @@ export function audienceProblems(op: AudienceOp): string[] {
 
 /** Fields that take a list. A text given alone is never split into letters: the app and Claude's calls
  *  make it a one-item list (service.ts), and the check refuses anything else that is not a list. */
-export const LIST_FIELDS = ["adsets", "campaigns", "ads", "whole_campaigns", "countries", "primary_texts", "headlines", "descriptions", "custom_audiences", "excluded_custom_audiences", "interests", "languages", "block_list_ids", "special_ad_categories"];
+export const LIST_FIELDS = ["adsets", "campaigns", "ads", "whole_campaigns", "countries", "primary_texts", "headlines", "descriptions", "tracking_pixels", "tracking_offline", "custom_audiences", "excluded_custom_audiences", "interests", "languages", "block_list_ids", "special_ad_categories"];
 
 /** List fields of a step (and of its copies' changes) that are not lists. */
 function notLists(op: Record<string, unknown>): string[] {
@@ -823,6 +824,8 @@ const MONEY_FIELDS = ["daily_budget", "lifetime_budget", "bid_amount", "spend_ca
 export async function summarise(client: MetaClient, input: PlanInput, opts: { validate?: boolean; done?: Map<number, string[]>; progress?: PlanProgress[]; atRun?: boolean } = {}): Promise<PlanSummary> {
   const info = await accountInfo(client);
   const cur = info.currency;
+  // Pixel and language names for the summary (cached; a failed read leaves the IDs).
+  const idNames = await plainNames(client);
   const world = new World(client, cur);
   /** The saved progress of a step that has not finished (a stopped step being retried), if any. */
   const openProgress = (i: number): PlanProgress | undefined => {
@@ -1160,6 +1163,13 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
         continue;
       }
       const lists = notLists(op as unknown as Record<string, unknown>);
+      // placements: one of two words, or {platforms, …_positions}; also in each copy's changes.
+      const badPlacements = (pl: unknown, where: string) => {
+        if (typeof pl === "string" && pl !== "advantage" && pl !== "advantage_no_audience_network") lists.push(`${where}placements "${pl}" is not one Meta knows here: use "advantage", "advantage_no_audience_network", or {"platforms": [...]} with positions.`);
+      };
+      badPlacements((op as { placements?: unknown }).placements, "");
+      const copyChanges = (op as { changes?: unknown }).changes;
+      if (Array.isArray(copyChanges)) copyChanges.forEach((c, j) => c && typeof c === "object" && badPlacements((c as { placements?: unknown }).placements, `copy ${j + 1}: `));
       if (lists.length) {
         // Not read item by item (a text would be read letter by letter, "a, s, 1 are not ad sets").
         for (const l of lists) err(n, l);
@@ -1325,7 +1335,7 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
           world.adsets.set(id, w);
           world.refs.set(ref, { kind: "adset", ids: [id] });
           c.involved = true;
-          const d = describeAdSet(w.row, cur);
+          const d = describeAdSet(w.row, cur, idNames);
           lines.push(`${c.cbo ? "campaign budget" : d.budget}; ${d.bid}; ${d.schedule}. Goal: ${d.goal}. Audience: ${d.audience}. Placements: ${d.placements}.${op.saved_audience_id ? ` Saved audience ${op.saved_audience_id}.` : ""}${extrasText(w.row)} Created ${w.status === "ACTIVE" ? "ON" : "paused"}.`);
           if (op.targeting_expansion === false) warn(n, "Meta now always lets Advantage detailed targeting reach beyond the interests you pick (it can't be switched off any more).");
           if (!op.bid_strategy && !c.cbo) lines.push(`No bid strategy given: ${spec.bid_strategy === DEFAULT_BID ? "Highest volume (no cap)" : (spec.bid_strategy ?? "").replace(/_/g, " ").toLowerCase()} is used.`);
@@ -1396,10 +1406,14 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
             if (needsBid(op.bid_strategy) && op.bid_amount === undefined && !a.row.bid_amount) err(n, `${op.bid_strategy} needs bid_amount.`);
             if (op.start_time) ch.push(`start → ${istLabel(op.start_time)}`);
             if (op.end_time) ch.push(`end → ${istLabel(op.end_time)}`);
-            if (op.goal || op.destination || op.event || op.pixel_id) ch.push(`goal → ${[op.destination, op.goal, op.event].filter(Boolean).join(" / ")}`);
+            if (op.goal || op.destination || op.event || op.pixel_id) {
+              const ev = op.event === "OTHER" && op.custom_event_str ? `Custom event: ${op.custom_event_str}` : op.event;
+              const px = op.pixel_id ? (idNames.pixels?.[String(op.pixel_id)] ? `pixel "${idNames.pixels[String(op.pixel_id)]}" (${op.pixel_id})` : `pixel ${op.pixel_id}`) : "";
+              ch.push(`goal → ${[op.destination, op.goal, ev, px].filter(Boolean).join(" / ")}`);
+            }
             const params = adsetParams(op, cur, { current: a.row as AdSetRow, forCreate: false });
             if (touchesAudience(op) || op.replace_targeting) {
-              const d = describeAdSet({ targeting: params.targeting as Targeting }, cur);
+              const d = describeAdSet({ targeting: params.targeting as Targeting }, cur, idNames);
               ch.push(`audience → ${d.audience}; placements → ${d.placements}`);
               if (c) for (const p of specialTargetingProblems(params.targeting as Targeting, c.special)) err(n, p);
             }
@@ -1470,12 +1484,12 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
             const changed = Object.entries(ch)
               .filter(([k, v]) => k !== "name" && k !== "name_template" && v !== undefined)
               .map(([k, v]) => plainChange(k, v));
-            const d = describeAdSet(w.row, cur);
+            const d = describeAdSet(w.row, cur, idNames);
             lines.push(`Copy ${j + 1}: "${name}": ${target.cbo ? "campaign budget" : baseDaily ? `${m(baseDaily)} a day` : `${m(baseLife)} lifetime`}; ${d.bid}${changed.length ? ` (changed: ${changed.join(", ")})` : " (same settings)"}${w.status === "ACTIVE" ? ", turned ON" : ", paused"}.`);
             budgetCheck(n, `Copy "${name}"`, baseDaily);
             if (w.status === "ACTIVE") turnOn(`ad set "${name}"`, n);
           }
-          const d0 = describeAdSet(src.row, cur);
+          const d0 = describeAdSet(src.row, cur, idNames);
           lines.push(`From the original: goal ${d0.goal}; audience ${d0.audience}; placements ${d0.placements}; ${d0.schedule}.${extrasText(src.row)}`);
           if (op.with_ads && srcAds.length) lines.push("Each ad set and each ad is copied one at a time (Meta copies at most 2 objects at once).");
           const srcMin = fromMinor(src.row.daily_min_spend_target, cur) || 0;
@@ -1565,7 +1579,8 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
           if (!changes.length) err(n, "nothing to change.");
           for (const pr of adEditProblems(op)) err(n, pr);
           // Putting an earlier creative back (an undo) is not a text change: no new creative is made.
-          const textChange = changes.some((c) => !c.startsWith("name") && !c.startsWith("status") && !c.startsWith("creative →"));
+          // Tracking is the ad's own setting, not its creative: no new creative, also fine on post ads.
+          const textChange = changes.some((c) => !c.startsWith("name") && !c.startsWith("status") && !c.startsWith("creative →") && !c.startsWith("tracking"));
           const many = (op.primary_texts?.length ?? 0) > 1 || (op.headlines?.length ?? 0) > 1 || (descriptionsIn(op)?.length ?? 0) > 1;
           const missing = await world.preload("ad", ids.filter((id) => !isRef(id)));
           for (const id of missing) err(n, `ad ${id} is not an ad in this ad account (or it was deleted or archived).`);
@@ -1830,7 +1845,7 @@ export async function summarise(client: MetaClient, input: PlanInput, opts: { va
     .map((a) => {
       const c = world.campaigns.get(a.campaignId);
       const cbo = !!c?.cbo;
-      const d = describeAdSet({ ...a.row, daily_budget: undefined, lifetime_budget: undefined }, cur);
+      const d = describeAdSet({ ...a.row, daily_budget: undefined, lifetime_budget: undefined }, cur, idNames);
       return {
         step: a.steps[0],
         steps: a.steps,

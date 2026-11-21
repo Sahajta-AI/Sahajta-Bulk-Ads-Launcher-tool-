@@ -47,7 +47,7 @@ export function httpApi(baseUrl: string, apiKey: string): LauncherApi {
 }
 
 // Shapes we read from the app's API (subset of BatchView).
-interface PresetView { name: string; pageId?: string; pageName?: string; igUserId?: string; igName?: string; enhancements?: Record<string, string>; multiAdvertiser?: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string }
+interface PresetView { name: string; pageId?: string; pageName?: string; igUserId?: string; igName?: string; enhancements?: Record<string, string>; multiAdvertiser?: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string; offlineDatasetIds?: string[] }
 interface Check { level: "error" | "warning"; message: string }
 interface AdCopy { primaryTexts: string[]; headlines: string[]; descriptions?: string[]; linkUrl: string; cta: string; utmTemplate?: string; displayLink?: string; leadFormId?: string }
 interface ViewAd {
@@ -181,6 +181,7 @@ function presetLine(p: PresetView | null): string {
     `WhatsApp number ${p.whatsappNumber || "none"}`,
     `Threads account ${p.threadsUserId || "none"}`,
     `branded content partner Page ${p.sponsorPageId || "none"}`,
+    `offline event sets tracked ${p.offlineDatasetIds?.join(", ") || "none"}`,
     `AI enhancements ${on.length ? `${on.join(", ")} on` : "all off"}`,
     `multi-advertiser ${p.multiAdvertiser ? "on" : "off"}`,
   ];
@@ -500,7 +501,7 @@ export function registerTools(server: McpServer, api: LauncherApi) {
         const t = await api.call<{
           copy: { id: number; name: string; primaryTexts: string[]; headlines: string[]; linkUrl: string; cta: string; utmTemplate?: string; displayLink?: string; leadFormId?: string; descriptions?: string[] }[];
           naming: { id: number; name: string; kind: string; pattern: string; is_default: number }[];
-          presets: { id: number; name: string; pageId?: string; pageName: string; igName: string; enhancementsOn: string[]; multiAdvertiser: boolean; isDefault: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string }[];
+          presets: { id: number; name: string; pageId?: string; pageName: string; igName: string; enhancementsOn: string[]; multiAdvertiser: boolean; isDefault: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string ; offlineDatasetIds?: string[] }[];
           features: { key: string; label: string }[];
           tokens: { token: string; meaning: string }[];
         }>("GET", "/api/templates");
@@ -515,7 +516,7 @@ export function registerTools(server: McpServer, api: LauncherApi) {
           "Settings presets:",
           ...t.presets.map(
             (p) =>
-              `  - "${p.name}" (id ${p.id})${p.isDefault ? " (default)" : ""}: Page ${p.pageName || p.pageId || "not set"}, Instagram ${p.igName ? `@${p.igName}` : "none"}, AI enhancements ${p.enhancementsOn.length ? p.enhancementsOn.join(", ") + " on" : "all off"}, multi-advertiser ${p.multiAdvertiser ? "on" : "off"}, WhatsApp ${p.whatsappNumber || "none"}, Threads account ${p.threadsUserId || "none"}, partner Page (branded content) ${p.sponsorPageId || "none"}`,
+              `  - "${p.name}" (id ${p.id})${p.isDefault ? " (default)" : ""}: Page ${p.pageName || p.pageId || "not set"}, Instagram ${p.igName ? `@${p.igName}` : "none"}, AI enhancements ${p.enhancementsOn.length ? p.enhancementsOn.join(", ") + " on" : "all off"}, multi-advertiser ${p.multiAdvertiser ? "on" : "off"}, WhatsApp ${p.whatsappNumber || "none"}, Threads account ${p.threadsUserId || "none"}, partner Page (branded content) ${p.sponsorPageId || "none"}, offline event sets ${p.offlineDatasetIds?.join(", ") || "none"}`,
           ),
           "Advantage+ creative enhancement keys (for save_settings_preset):",
           ...t.features.map((f) => `  ${f.key} = ${f.label}`),

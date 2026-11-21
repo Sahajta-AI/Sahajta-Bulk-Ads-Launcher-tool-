@@ -7,7 +7,7 @@ import { istLabel, timeMs } from "../time";
 import { dailyEquivalent } from "./budget";
 import type { BatchRow, Check } from "../types";
 import { accountStatus, pixelReport, type PixelReport } from "./checks";
-import { accountInfo, campaignAdSets, describeAdSet, getAdSet, getCampaign, isCbo, istTime, type AdSetRow } from "./objects";
+import { accountInfo, campaignAdSets, describeAdSet, getAdSet, getCampaign, isCbo, istTime, offlineChecks, plainNames, type AdSetRow } from "./objects";
 import { fromMinor, money } from "./options";
 import { MAX_COPIES, budgetWarnDaily, ceilingWords, dailyCeiling, savePlan, summarise, type Op, type PlanInput, type PlanSummary, type SpendItem } from "./plan";
 
@@ -443,6 +443,7 @@ export async function launchSummary(b: BatchRow, goLive: { mode: "paused" | "now
   const acc = getAccount(b.ad_account_id)!;
   const client = clientFor(acc.id);
   const { currency, name } = await accountInfo(client);
+  const names = await plainNames(client);
   const m = (v: number | null) => money(v, currency);
   const ads = getAds(b.id);
   const warnings: string[] = [];
@@ -469,7 +470,7 @@ export async function launchSummary(b: BatchRow, goLive: { mode: "paused" | "now
     const cbo = isCbo(c);
     const a = await getAdSet(client, t.id);
     rows.set(t.id, a);
-    const d = describeAdSet(a, currency);
+    const d = describeAdSet(a, currency, names);
     const daily = fromMinor(a.daily_budget, currency);
     const life = fromMinor(a.lifetime_budget, currency);
     const each = cbo ? null : dailyEquivalent(daily, life, a.end_time, a.start_time, from);
@@ -562,6 +563,18 @@ export async function launchSummary(b: BatchRow, goLive: { mode: "paused" | "now
   }
   health.push(`Daily budget ceiling: ${ceiling ? `${m(ceiling)} a day (Settings → Safety): a launch or plan that would let more spend per day is refused` : "none set, so nothing stops a very large budget. It can be set only in the app, Settings → Safety"}.`);
   const preset = batchPreset(b);
+  // Each ad's tracking, as the launcher sets it explicitly (the pixel and the preset's offline event sets).
+  const named = (id: string) => (names.pixels?.[id] ? `"${names.pixels[id]}" (${id})` : id);
+  const pixelsBySet = [...rows.values()].map((a) => ({ name: a.name, px: a.promoted_object?.pixel_id ? String(a.promoted_object.pixel_id) : "" }));
+  const distinct = [...new Set(pixelsBySet.map((x) => x.px))];
+  const offline = preset.offlineDatasetIds ?? [];
+  const offlineText = offline.length ? `offline event set${offline.length > 1 ? "s" : ""} ${offline.map(named).join(", ")}` : "no offline event set";
+  // A wrong offline event set ID would make Meta refuse every ad: checked here, before anything is made.
+  checks.push(...(await offlineChecks(client, offline, names)));
+  if (pixelsBySet.length) {
+    const website = distinct.length === 1 ? (distinct[0] ? `website pixel ${named(distinct[0])}` : "no website pixel (the ad set has none)") : pixelsBySet.map((x) => `"${x.name}": ${x.px ? `pixel ${named(x.px)}` : "no pixel"}`).join("; ");
+    health.push(`Tracking set on every ad by the launcher: ${website}; ${offlineText}.`);
+  }
   const goLiveText =
     goLive.mode === "now" ? "Turned ON as soon as every ad is created." : goLive.mode === "at" && goLive.at ? `Created paused, turned ON at ${istTime(goLive.at)}.` : "Created PAUSED. Nothing spends until someone turns it on.";
   if (goLive.mode === "at" && (!goLive.at || Number.isNaN(timeMs(goLive.at)))) warnings.push("Pick the date and time to turn the ads on.");

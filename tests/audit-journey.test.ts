@@ -433,7 +433,7 @@ describe("Row 2 · ad sets: create, duplicate and edit with every setting", () =
     Object.assign((mock.objects.get("as1")!.targeting as Record<string, unknown>), { genders: [2], flexible_spec: [{ interests: [{ id: "6003", name: "Real estate" }] }], publisher_platforms: ["facebook"], facebook_positions: ["feed"] });
     const p = await tool("plan_changes", { ops: [{ type: "edit_adset", adset: "November test ad set", genders: "all", interests: [], placements: "advantage", advantage_audience: true, age_min: 21 }] });
     readable(p.text);
-    expect.soft(p.text).toMatch(/audience → IN · age 21–55 · all genders · Advantage\+ audience on; placements → Advantage\+ placements \(all\)/);
+    expect.soft(p.text).toMatch(/audience → IN · age 21–55 · all genders · Advantage\+ audience on; placements → Advantage\+ placements: Meta picks among Facebook, Instagram, Messenger, Audience Network, Threads, WhatsApp/);
     const key = planKeyIn(p.text);
     await tool("confirm_plan", { plan_id: key, confirm: true, accept_warnings: true });
     await workerRunsPlan(key);

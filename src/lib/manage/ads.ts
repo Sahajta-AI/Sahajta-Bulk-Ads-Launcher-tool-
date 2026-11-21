@@ -27,6 +27,32 @@ export interface AdEditSpec {
   media_url?: string;
   /** Put this existing creative on the ad (used by "Undo this plan"). */
   creative_id?: string;
+  /** Website pixels the ad tracks (IDs); [] = none. With tracking_offline, sets the ad's tracking explicitly. */
+  tracking_pixels?: string[];
+  /** Offline event sets (dataset IDs) the ad tracks; [] = none. */
+  tracking_offline?: string[];
+  /** Meta's raw tracking_specs, put back as they were (used by "Undo this plan"). */
+  tracking_specs?: Record<string, unknown>[];
+}
+
+/**
+ * The tracking_specs an edit sets: the website pixels and offline event sets given (a list left out is kept
+ * from the ad); everything else Meta tracks on the ad (link clicks, post engagement, on-site conversions…)
+ * is kept as it is.
+ */
+export function editTracking(e: AdEditSpec, current: Record<string, unknown>[] = []): Record<string, unknown>[] | undefined {
+  if (e.tracking_specs) return e.tracking_specs;
+  if (e.tracking_pixels === undefined && e.tracking_offline === undefined) return undefined;
+  const has = (t: Record<string, unknown>, type: string) => Array.isArray(t["action.type"]) && (t["action.type"] as string[]).includes(type);
+  const isPixel = (t: Record<string, unknown>) => has(t, "offsite_conversion") && Array.isArray(t.fb_pixel);
+  const isOffline = (t: Record<string, unknown>) => has(t, "offline_conversion") && Array.isArray(t.dataset);
+  const pixels = e.tracking_pixels ?? current.filter(isPixel).flatMap((t) => t.fb_pixel as string[]);
+  const offline = e.tracking_offline ?? current.filter(isOffline).flatMap((t) => t.dataset as string[]);
+  return [
+    ...current.filter((t) => !isPixel(t) && !isOffline(t)),
+    ...(pixels.length ? [{ "action.type": ["offsite_conversion"], fb_pixel: pixels }] : []),
+    ...(offline.length ? [{ "action.type": ["offline_conversion"], dataset: offline }] : []),
+  ];
 }
 
 interface CreativeRow {
@@ -49,6 +75,8 @@ export interface AdInfo {
   status: string;
   effectiveStatus: string;
   adsetId: string;
+  /** Meta's tracking_specs on the ad (what it counts: website pixel, offline event sets…). */
+  trackingSpecs: Record<string, unknown>[];
   creative: CreativeRow;
   /** The ad runs an existing post (its likes and comments): its text can't be changed. */
   fromPost: boolean;
@@ -59,7 +87,7 @@ export interface AdInfo {
 const CREATIVE_FIELDS = "id,name,object_story_id,effective_object_story_id,effective_instagram_media_id,source_instagram_media_id,object_story_spec,asset_feed_spec,url_tags,degrees_of_freedom_spec,contextual_multi_ads";
 
 export async function readAd(client: MetaClient, id: string): Promise<AdInfo> {
-  const r = await client.get<{ id: string; name: string; status: string; effective_status?: string; adset_id: string; creative?: CreativeRow }>(id, { fields: `id,name,status,effective_status,adset_id,creative{${CREATIVE_FIELDS}}` });
+  const r = await client.get<{ id: string; name: string; status: string; effective_status?: string; adset_id: string; tracking_specs?: Record<string, unknown>[]; creative?: CreativeRow }>(id, { fields: `id,name,status,effective_status,adset_id,tracking_specs,creative{${CREATIVE_FIELDS}}` });
   const c = r.creative ?? { id: "" };
   return {
     id: r.id,
@@ -67,6 +95,7 @@ export async function readAd(client: MetaClient, id: string): Promise<AdInfo> {
     status: r.status,
     effectiveStatus: r.effective_status ?? r.status,
     adsetId: r.adset_id,
+    trackingSpecs: r.tracking_specs ?? [],
     creative: c,
     fromPost: !!(c.object_story_id || (c.source_instagram_media_id && !c.object_story_spec)),
     postId: c.effective_object_story_id ?? c.object_story_id ?? null,
@@ -114,6 +143,9 @@ export function describeAdEdit(e: AdEditSpec): string[] {
   if (e.url_tags !== undefined) out.push(`UTM tags → ${e.url_tags || "none"}`);
   if (e.media_url) out.push(`file → ${e.media_url}`);
   if (e.creative_id) out.push(`creative → ${e.creative_id} (as it was)`);
+  if (e.tracking_pixels !== undefined) out.push(`tracking: website pixel${e.tracking_pixels.length === 1 ? "" : "s"} → ${e.tracking_pixels.join(", ") || "none"}`);
+  if (e.tracking_offline !== undefined) out.push(`tracking: offline event set${e.tracking_offline.length === 1 ? "" : "s"} → ${e.tracking_offline.join(", ") || "none"}`);
+  if (e.tracking_specs) out.push("tracking → as it was");
   if (e.status) out.push(`status → ${e.status}`);
   return out;
 }
@@ -125,6 +157,9 @@ export function adEditProblems(e: AdEditSpec): string[] {
   if (tooManyDescriptions(d)) out.push(tooManyDescriptions(d).replace(/^Up/, "up"));
   if (e.cta && !CTA_TYPES.includes(e.cta)) out.push(`unknown button ${e.cta}.`);
   if (e.link_url && !/^https?:\/\//i.test(e.link_url)) out.push(`the link must start with https://.`);
+  for (const [k, v] of [["tracking_pixels", e.tracking_pixels], ["tracking_offline", e.tracking_offline]] as const) {
+    if (v !== undefined && (!Array.isArray(v) || v.some((x) => !/^\d+$/.test(String(x).trim())))) out.push(`${k} must be a list of IDs (numbers), e.g. ["111222333444555"].`);
+  }
   return out;
 }
 
@@ -242,6 +277,8 @@ export async function editAd(client: MetaClient, id: string, e: AdEditSpec, o: E
   const before: Record<string, unknown> = {};
   if (e.name) before.name = ad.name;
   if (e.status) before.status = ad.status;
+  const tracking = editTracking(e, ad.trackingSpecs);
+  if (tracking) before.tracking_specs = ad.trackingSpecs;
   if (textChange(e) || e.creative_id) before.creative_id = ad.creative.id;
   o.remember(before);
   const patch: Record<string, unknown> = {};
@@ -277,6 +314,8 @@ export async function editAd(client: MetaClient, id: string, e: AdEditSpec, o: E
     patch.creative = { creative_id: created.id };
   }
   if (e.creative_id && !patch.creative) patch.creative = { creative_id: e.creative_id };
+  // Tracking is the ad's own setting (not its creative): changed on the ad, no new creative, also on post ads.
+  if (tracking) patch.tracking_specs = tracking;
   if (e.status) patch.status = e.status;
   if (Object.keys(patch).length) await client.post(id, patch);
   return `Updated ad "${e.name ?? ad.name}"${patch.creative ? " with a new creative (Meta reviews it again)" : ""}.`;

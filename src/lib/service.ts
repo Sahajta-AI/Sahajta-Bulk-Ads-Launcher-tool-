@@ -5,7 +5,7 @@ import { DEFAULT_UTM, META_URL_PARAMS, NAME_TOKENS } from "./engine/naming";
 import { humanDuration } from "./engine/estimate";
 import { accountLimits, autoGroup, buildPreview, checkLinks, launchTimeLeft, MAX_ADS_PER_ADSET, moveAsset, type AdsetDest, type DestinationInfo, type Preview } from "./engine/preview";
 import { extraAdsets, goLivePlan, groupHold, groupWaits, lateRetryFrom, launchExtras, launchSummary, siblings, stopTurnOn, turnOnGroup, type ExtraAdset } from "./manage/golive";
-import { accountInfo, getAdSet, getCampaign, isCbo, istTime } from "./manage/objects";
+import { accountInfo, getAdSet, getCampaign, isCbo, istTime, offlineChecks, plainNames } from "./manage/objects";
 import { fromMinor, money } from "./manage/options";
 import { getAppSettings } from "./appsettings";
 import fs from "node:fs";
@@ -71,6 +71,8 @@ export interface AdsetInfo {
   /** Meta's destination_type: ON_AD (Instant form), WEBSITE, WHATSAPP… */
   destinationType?: string;
   optimizationGoal?: string;
+  /** The ad set's website pixel ("" = none), sent as each ad's tracking. */
+  pixelId?: string;
 }
 export interface CampaignInfo {
   id: string;
@@ -81,7 +83,7 @@ export interface CampaignInfo {
 }
 
 /** Bumped when the cached list gains fields, so an old cache entry is read again. */
-const DEST_VERSION = 2;
+const DEST_VERSION = 3;
 
 export async function listDestinations(refresh = false): Promise<{ campaigns: CampaignInfo[]; fetchedAt: string }> {
   const acc = account();
@@ -92,10 +94,10 @@ export async function listDestinations(refresh = false): Promise<{ campaigns: Ca
   }
   const client = clientFor(acc.id);
   const live = ["ACTIVE", "PAUSED", "IN_PROCESS", "WITH_ISSUES", "CAMPAIGN_PAUSED"];
-  type AdsetRow = { id: string; name: string; status: string; campaign_id: string; is_dynamic_creative?: boolean; destination_type?: string; optimization_goal?: string };
+  type AdsetRow = { id: string; name: string; status: string; campaign_id: string; is_dynamic_creative?: boolean; destination_type?: string; optimization_goal?: string; promoted_object?: { pixel_id?: string } };
   const [campaigns, adsets] = await Promise.all([
     client.getAll<{ id: string; name: string; status: string; objective: string }>(`${client.accountId}/campaigns`, { fields: "id,name,status,objective", effective_status: live.filter((s) => s !== "CAMPAIGN_PAUSED") }),
-    client.getAll<AdsetRow>(`${client.accountId}/adsets`, { fields: "id,name,status,campaign_id,is_dynamic_creative,destination_type,optimization_goal", effective_status: live }),
+    client.getAll<AdsetRow>(`${client.accountId}/adsets`, { fields: "id,name,status,campaign_id,is_dynamic_creative,destination_type,optimization_goal,promoted_object", effective_status: live }),
   ]);
   const out = {
     v: DEST_VERSION,
@@ -107,7 +109,7 @@ export async function listDestinations(refresh = false): Promise<{ campaigns: Ca
       objective: c.objective,
       adsets: adsets
         .filter((a) => a.campaign_id === c.id)
-        .map((a) => ({ id: a.id, name: a.name, status: a.status, isDynamicCreative: !!a.is_dynamic_creative, destinationType: a.destination_type, optimizationGoal: a.optimization_goal })),
+        .map((a) => ({ id: a.id, name: a.name, status: a.status, isDynamicCreative: !!a.is_dynamic_creative, destinationType: a.destination_type, optimizationGoal: a.optimization_goal, pixelId: a.promoted_object?.pixel_id ? String(a.promoted_object.pixel_id) : "" })),
     })),
   };
   cacheSet(key, out, 5 * 60_000);
@@ -286,6 +288,9 @@ export function savePreset(p: Partial<Preset> & { id?: number; name?: string; is
   }
   const wa = p.whatsappNumber === undefined || p.whatsappNumber === null ? null : String(p.whatsappNumber).replace(/[^\d+]/g, "");
   if (wa && !/^\+?\d{11,15}$/.test(wa)) throw new HttpError(400, "Give the WhatsApp number with its country code, e.g. +919812345678.");
+  // Offline event sets tracked on each ad: dataset IDs (numbers); [] or "" clears.
+  const offline = p.offlineDatasetIds === undefined || p.offlineDatasetIds === null ? null : (Array.isArray(p.offlineDatasetIds) ? p.offlineDatasetIds : String(p.offlineDatasetIds).split(/[\s,]+/)).map((x) => String(x).trim()).filter(Boolean);
+  if (offline?.some((x) => !/^\d+$/.test(x))) throw new HttpError(400, "Offline event sets are given by their IDs (numbers, e.g. 555666777888999).");
   for (const [k, v] of [["Threads account ID", p.threadsUserId], ["partner Page ID", p.sponsorPageId]] as const) if (v && !/^\d+$/.test(String(v).trim())) throw new HttpError(400, `The ${k} is a number.`);
   const opt = (v: string | undefined | null) => (v === undefined || v === null ? null : String(v).trim());
   const multi = p.multiAdvertiser === undefined ? null : p.multiAdvertiser ? 1 : 0;
@@ -296,15 +301,15 @@ export function savePreset(p: Partial<Preset> & { id?: number; name?: string; is
         .prepare(
           `UPDATE settings_presets SET name = COALESCE(?, name), page_id = COALESCE(?, page_id), page_name = COALESCE(?, page_name), ig_user_id = COALESCE(?, ig_user_id), ig_name = COALESCE(?, ig_name),
              enhancements = COALESCE(?, enhancements), multi_advertiser = COALESCE(?, multi_advertiser), whatsapp_number = COALESCE(?, whatsapp_number), threads_user_id = COALESCE(?, threads_user_id),
-             sponsor_page_id = COALESCE(?, sponsor_page_id), is_default = COALESCE(?, is_default) WHERE id = ? AND ad_account_id = ?`,
+             sponsor_page_id = COALESCE(?, sponsor_page_id), offline_dataset_ids = COALESCE(?, offline_dataset_ids), is_default = COALESCE(?, is_default) WHERE id = ? AND ad_account_id = ?`,
         )
-        .run(name ?? null, opt(p.pageId), opt(p.pageName), opt(p.igUserId), opt(p.igName), enh, multi, wa, opt(p.threadsUserId), opt(p.sponsorPageId), p.isDefault === undefined ? null : p.isDefault ? 1 : 0, id!, acc.id);
+        .run(name ?? null, opt(p.pageId), opt(p.pageName), opt(p.igUserId), opt(p.igName), enh, multi, wa, opt(p.threadsUserId), opt(p.sponsorPageId), offline === null ? null : offline.join(","), p.isDefault === undefined ? null : p.isDefault ? 1 : 0, id!, acc.id);
       return id!;
     }
     return Number(
       db()
-        .prepare("INSERT INTO settings_presets (name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, is_default, ad_account_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-        .run(name, opt(p.pageId) ?? "", opt(p.pageName) ?? "", opt(p.igUserId) ?? "", opt(p.igName) ?? "", enh ?? "{}", multi ?? 0, wa ?? "", opt(p.threadsUserId) ?? "", opt(p.sponsorPageId) ?? "", p.isDefault ? 1 : 0, acc.id).lastInsertRowid,
+        .prepare("INSERT INTO settings_presets (name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, offline_dataset_ids, is_default, ad_account_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(name, opt(p.pageId) ?? "", opt(p.pageName) ?? "", opt(p.igUserId) ?? "", opt(p.igName) ?? "", enh ?? "{}", multi ?? 0, wa ?? "", opt(p.threadsUserId) ?? "", opt(p.sponsorPageId) ?? "", (offline ?? []).join(","), p.isDefault ? 1 : 0, acc.id).lastInsertRowid,
     );
   })();
 }
@@ -1334,6 +1339,13 @@ export async function launchBatch(key: string, opts: { confirm?: boolean; accept
   const dest = await destinationInfo(b, { fresh: true });
   const links = await checkLinks(getAds(b.id).map((a) => adCopy(b, a).linkUrl).filter(Boolean));
   const view = await batchView(key, { dest, linkResults: links, persist: true, remember: false });
+  // The preset's offline event sets: a wrong ID makes Meta refuse every ad, so any launch stops here.
+  const offline = batchPreset(b).offlineDatasetIds ?? [];
+  if (offline.length) {
+    const client = clientFor(b.ad_account_id);
+    const bad = (await offlineChecks(client, offline, await plainNames(client))).filter((c) => c.level === "error");
+    if (bad.length) throw new HttpError(422, bad.map((c) => c.message).join("\n"));
+  }
   // Strict guardrail: a launch that turns ads on needs the total daily budget typed back.
   let spend: string | null = null;
   let spendAt: string | null = null;
@@ -1391,6 +1403,14 @@ export async function launchBatch(key: string, opts: { confirm?: boolean; accept
         throw new HttpError(422, `The copy for ad set "${v.settings.adsetName}" can't launch:\n- ${list.join("\n- ") || "see the preview"}`);
       }
     }
+  }
+  // Each ad's tracking is set explicitly to its ad set's website pixel: saved now, from the ad set list the
+  // check above read, so the run asks Meta nothing for it. Read before the batch is queued (a restart can't
+  // leave a queued batch without its job); a draft that doesn't launch just keeps it.
+  for (const bb of [b, ...sibs.map((k) => batchOr404(k))]) {
+    const px = bb.adset_id ? (await findAdset(bb.adset_id).catch(() => null))?.adset.pixelId : undefined;
+    // Not known now (the list couldn't be read): null, so the run reads it (never an older ad set's pixel).
+    updateBatch(bb.id, { tracking_pixel: px ?? null });
   }
   // Only one launch per batch, even from two tabs or Claude at the same moment.
   // The total typed back is kept: the turn-on plan made after the launch is queued only if what it can spend is not more.

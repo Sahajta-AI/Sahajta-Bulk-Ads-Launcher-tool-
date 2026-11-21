@@ -241,7 +241,7 @@ function copyTemplates(from: number, to: number) {
   const d = db();
   d.prepare("INSERT INTO copy_templates (ad_account_id, name, primary_texts, headlines, description, descriptions, cta, link_url, utm_template, display_link, lead_form_id) SELECT ?, name, primary_texts, headlines, description, descriptions, cta, link_url, utm_template, display_link, lead_form_id FROM copy_templates WHERE ad_account_id = ?").run(to, from);
   d.prepare("INSERT INTO naming_templates (ad_account_id, name, kind, pattern, is_default) SELECT ?, name, kind, pattern, is_default FROM naming_templates WHERE ad_account_id = ?").run(to, from);
-  d.prepare("INSERT INTO settings_presets (ad_account_id, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, is_default) SELECT ?, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, is_default FROM settings_presets WHERE ad_account_id = ?").run(to, from);
+  d.prepare("INSERT INTO settings_presets (ad_account_id, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, offline_dataset_ids, is_default) SELECT ?, name, page_id, page_name, ig_user_id, ig_name, enhancements, multi_advertiser, whatsapp_number, threads_user_id, sponsor_page_id, offline_dataset_ids, is_default FROM settings_presets WHERE ad_account_id = ?").run(to, from);
   d.prepare("INSERT INTO campaign_templates (ad_account_id, name, objective, special_ad_categories) SELECT ?, name, objective, special_ad_categories FROM campaign_templates WHERE ad_account_id = ?").run(to, from);
 }
 

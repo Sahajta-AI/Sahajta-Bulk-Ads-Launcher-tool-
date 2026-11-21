@@ -356,7 +356,7 @@ export default function BatchClient({ batchKey }: { batchKey: string }) {
           )}
           <div className="copybox">
             {tpl?.tokens.map((t) => <div key={t.token} style={{ padding: "2px 0" }}><code>{t.token}</code> {t.meaning}</div>)}
-            <p className="hint">The code in square brackets at the end, like [L:{view.key}-01], is added to every name. A retry uses it to find ads Meta already made, so nothing is created twice.</p>
+            <p className="hint">Ads get exactly these names in Meta. A code like [L:{view.key}-01] is added only to the names of creatives and of new ad sets the launcher makes; a retry uses it to find what Meta already made, so nothing is created twice.</p>
           </div>
         </details>
       </section>

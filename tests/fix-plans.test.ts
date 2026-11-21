@@ -479,7 +479,10 @@ describe("P28 · ad set settings in plain words", () => {
     expect(all).toMatch(/Pune \+25 km/);
     expect(all).toMatch(/Mon, Tue 09:00–18:00/);
     expect(all).toMatch(/1-day click attribution/);
-    expect(all).toMatch(/language IDs 24/);
+    // Without names (no read of Meta's languages): the ID, said as one.
+    expect(all).toMatch(/language: ID 24/);
+    // With names: the language's name.
+    expect(Object.values(describeAdSet({ targeting: t }, "INR", { locales: { "24": "English (UK)" } })).join(" | ")).toMatch(/language English \(UK\)/);
     expect(all).toMatch(/limited inventory, 1 block list/);
     expect(all).toMatch(/Dynamic creative on/);
     expect(all).toMatch(/frequency cap 2 per 7 days/);

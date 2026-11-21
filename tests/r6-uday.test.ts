@@ -541,6 +541,8 @@ describe("U9 · whatever edit_ad can change, list_ads shows (so every edit can b
     display_link: { value: "example.com/u9", shown: /display link: example\.com\/u9/ },
     url_tags: { value: "utm_source=u9&utm_content={{ad.name}}", shown: /UTM tags: utm_source=u9&utm_content=\{\{ad\.name\}\}/ },
     media_url: "covered elsewhere", // a Drive file: list_ads shows the file by name (U5)
+    tracking_pixels: { value: ["111222333444555"], shown: /tracking: website pixel [^\n]*111222333444555/ },
+    tracking_offline: { value: ["777000111"], shown: /offline event set 777000111/ },
   };
 
   it("every documented edit_ad field, changed by a real plan run, is visible in list_ads", async () => {
@@ -556,7 +558,8 @@ describe("U9 · whatever edit_ad can change, list_ads shows (so every edit can b
     const p = await call("plan_changes", { ops: [op] });
     expect(p.isError, p.text).toBe(false);
     const k = planKey(p.text);
-    expect((await call("confirm_plan", { plan_id: k, confirm: true, accept_warnings: true })).isError).toBe(false);
+    const conf = await call("confirm_plan", { plan_id: k, confirm: true, accept_warnings: true });
+    expect(conf.isError, conf.text).toBe(false);
     const ran = await runPlan(getPlan(k).id, { client: clientFor(), clock });
     expect(ran, (await call("plan_status", { plan_id: k })).text).toEqual({ done: 1, failed: 0 });
     const r = await call("list_ads", { adset: "as1" });

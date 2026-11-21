@@ -96,9 +96,9 @@ Two transports, one tool file (`src/mcp/tools.ts`): the Claude Desktop extension
 
 ## 7. Meta call sequence per ad (Graph API v26.0)
 
-Every name sent to Meta ends with ` [L:<batch>-<NN>]`. With `NAME_PREFIX=TEST_` it also starts with `TEST_`.
+Creative and new ad set names end with ` [L:<batch>-<NN>]`; ad names don't (the rendered name only). With `NAME_PREFIX=TEST_` names also start with `TEST_`.
 
-**Once per run:** `GET /act_x/ads` (and `/act_x/adsets` for a new ad set per ad) with `filtering=[{field:"name",operator:"CONTAIN",value:"[L:<batch>-"}]`; a found ad also gives its creative. Creatives only when a try of one was saved without its ID (each try is saved before it is sent) or after a restore (`deploy/restore.sh` marks unfinished ads): Meta has no name filter on `/act_x/adcreatives` ("Filtering field 'name' with operation 'contain' is not supported", 20 Nov 2026), so the tool lists recent creatives (up to 1,000, 100 a page) and matches names itself. Objects found are adopted (no new create).
+**Once per run:** new ad sets by `GET /act_x/adsets` with `filtering=[{field:"name",operator:"CONTAIN",value:"[L:<batch>-"}]`; then the ads in the batch's ad sets, `GET /act_x/ads?filtering=[{field:"adset.id",operator:"IN",value:[…]}]&fields=id,name,adset_id,creative{id}`: an ad is ours when it is in the ad's ad set on the ad's creative (or carries the key, for ads made before 21 Nov) and no other ad of the launcher has its ID. Creatives only when a try of one was saved without its ID (each try is saved before it is sent) or after a restore (`deploy/restore.sh` marks unfinished ads): Meta has no name filter on `/act_x/adcreatives` ("Filtering field 'name' with operation 'contain' is not supported", 20 Nov 2026), so the tool lists recent creatives (up to 1,000, 100 a page) and matches names itself. Objects found are adopted (no new create).
 
 **Image, one text and one headline:**
 1. `POST /act_x/adimages` (multipart `filename`) → `images.{name}.hash` (skipped if this file's SHA-256 is cached).
@@ -128,7 +128,7 @@ Not yet confirmed on a live account (see `BLOCKERS.md`). `scripts/real-test.ts` 
 1. `POST /{template_adset}/copies` {deep_copy:false, status_option:PAUSED, rename_options:{rename_strategy:ONLY_TOP_LEVEL_RENAME, rename_suffix:" [L:key]"}} → `copied_adset_id`. The key is in the name from the start.
 2. `POST /{new_adset}` {name} → the naming template's name. Repeated after a crash if needed.
 
-**After the run:** review job at +2, 10, 30, 60, 180, 360, 720, 1440 minutes while ads are pending: `GET /act_x/ads?filtering=[name CONTAIN "[L:<batch>-"]&fields=effective_status,ad_review_feedback,issues_info` (one read per 100 ads; `GET /?ids=` is an error since v26). Then a database backup.
+**After the run:** review job at +2, 10, 30, 60, 180, 360, 720, 1440 minutes while ads are pending: `GET /act_x/ads?filtering=[{field:"id",operator:"IN",value:[saved ad IDs]}]&fields=effective_status,ad_review_feedback,issues_info` (one read per 50 ads; an ad renamed in Ads Manager is still found; `GET /?ids=` is an error since v26). Then a database backup.
 
 **Approximate cost (points):** image ad 3 writes + 1 read ≈ 10; video pair ad ≈ 4 writes for upload + 8 reads + 2 writes + 1 read ≈ 21; new ad set adds 6.
 

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { TEXT_LIMITS } from "../copy-limits";
 import { db } from "../db";
 import { GB, freeBytes, removeUnusedUploads } from "../cleanup";
 import { CTA_TYPES } from "../manage/cta";
@@ -10,7 +11,7 @@ import type { AdRow, AssetRow, BatchRow, Check } from "../types";
 import { estimateWork, timeLeft, type Estimate, type LaunchWork, type RateLimits } from "./estimate";
 import { formatLabel, groupFiles, slotOf } from "./grouping";
 import { humanSize, ratioText } from "./media";
-import { metaName, renderName, renderUtm, unknownTokens, type NameContext } from "./naming";
+import { metaAdName, metaName, renderName, renderUtm, unknownTokens, type NameContext } from "./naming";
 
 // Everything between "files picked" and "launch": grouping, names, checks, estimate.
 
@@ -23,12 +24,7 @@ export const LIMITS = {
   videoMaxSec: 241 * 60,
   verticalLongSec: 90,
   videoMinWidth: 500,
-  primaryTextSoft: 125,
-  primaryTextHard: 1024,
-  headlineSoft: 40,
-  headlineHard: 255,
-  descriptionSoft: 30,
-  descriptionHard: 255,
+  ...TEXT_LIMITS,
   maxTexts: 5,
 };
 
@@ -616,7 +612,13 @@ export function launchWork(batch: BatchRow): LaunchWork {
     // when an earlier run tried one or after a restore (Meta has no name filter for them: up to 10 pages).
     if (b.status !== "running") {
       const need = lookupsNeeded(b, left);
-      w.runReads += (need.ads ? 1 : 0) + (need.adsets ? 1 : 0) + (need.creatives ? CREATIVE_LOOKUP_PAGES : 0);
+      // The ads are looked for in the ad sets known before the run (the existing one, the batch's new one,
+      // or new ones made or tried by an earlier run): none yet, no read (as reconcile does).
+      const tried = (a: AdRow) => (JSON.parse(a.attempts || "{}") as { adset?: number }).adset ?? 0;
+      const adsetsKnown = b.adset_mode === "existing" ? !!b.adset_id : b.adset_mode === "new_shared" ? !!b.shared_adset_id : left.some((a) => a.meta_adset_id || tried(a) > 0);
+      w.runReads += (need.ads && adsetsKnown ? 1 : 0) + (need.adsets ? 1 : 0) + (need.creatives ? CREATIVE_LOOKUP_PAGES : 0);
+      // A batch queued before 21 Nov has no saved pixel: its run reads it once (a draft gets it at launch, free).
+      if (b.status !== "draft" && b.adset_id && (b.tracking_pixel === null || b.tracking_pixel === undefined)) w.runReads += 1;
     }
     if (b.adset_mode === "new_per_ad") w.newAdsets += left.filter((a) => !a.meta_adset_id).length;
     else if (b.adset_mode === "new_shared" && !b.shared_adset_id) {
@@ -690,7 +692,8 @@ export function buildPreview(batchId: number, dest: DestinationInfo, capPoints: 
       key: ad.key,
       creativeName: ad.creative_name,
       name: ad.name ?? "",
-      metaName: metaName(ad.name || ad.creative_name, ad.key, opts.namePrefix),
+      // The ad's name in Meta: no launch key (21 Nov 2026).
+      metaName: metaAdName(ad.name || ad.creative_name, opts.namePrefix),
       adsetName: ad.adset_name ?? "",
       angle: ad.angle ?? "",
       files: assets.map((a) => ({

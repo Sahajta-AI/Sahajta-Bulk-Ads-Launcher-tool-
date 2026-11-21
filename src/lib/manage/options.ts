@@ -107,7 +107,12 @@ export const PLACEMENT_PLATFORMS: Option[] = [
   { value: "messenger", label: "Messenger" },
   { value: "audience_network", label: "Audience Network" },
   { value: "threads", label: "Threads" },
+  // WhatsApp Status (checked on 1A with validate_only, 21 Nov 2026: publisher_platforms "whatsapp", whatsapp_positions ["status"]).
+  { value: "whatsapp", label: "WhatsApp (Status)" },
 ];
+
+/** Every platform but Audience Network: "Advantage+ without Audience Network" (Meta picks the positions on these). */
+export const NO_AUDIENCE_NETWORK = PLACEMENT_PLATFORMS.map((p) => p.value).filter((v) => v !== "audience_network");
 
 /** Ad set attribution: click and view windows in days. */
 export const ATTRIBUTION: Option[] = [

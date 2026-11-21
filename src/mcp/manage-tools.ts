@@ -3,6 +3,7 @@ import { z } from "zod";
 import { istLabel } from "../lib/time";
 import { ATTRIBUTION, BID_STRATEGIES, BILLING_EVENTS, DESTINATIONS, GOALS, OBJECTIVES, PIXEL_EVENTS, PLACEMENT_PLATFORMS, SPECIAL_AD_CATEGORIES } from "../lib/manage/options";
 import { CTA_TYPES } from "../lib/manage/cta";
+import { overLimit } from "../lib/copy-limits";
 import type { Op } from "../lib/manage/plan";
 import type { AudienceSource } from "../lib/manage/audiences";
 import type { AdSetSpec, CampaignSpec } from "../lib/manage/objects";
@@ -336,7 +337,7 @@ const ADSET: Fields<AdSetSpec> = {
   custom_audiences: { t: 'list of audience IDs (lookup custom_audiences) or "$ref" of an audience this plan makes.', brief: '[ID or "$ref"]' },
   excluded_custom_audiences: { t: 'list of audience IDs or "$ref": people in these are left out.', brief: '[ID or "$ref"]' },
   advantage_audience: { t: "true or false: Advantage+ audience (off unless true).", brief: "true|false" },
-  placements: { t: `"advantage" (Meta picks), or {"platforms": [${values(PLACEMENT_PLATFORMS)}], "facebook_positions": [...], "instagram_positions": [...], "messenger_positions": [...], "audience_network_positions": [...], "threads_positions": [...]} with Meta's position names (e.g. feed, story, facebook_reels; stream, story, reels).`, brief: '"advantage" or {platforms, facebook_positions, instagram_positions…}' },
+  placements: { t: `"advantage" (Meta picks everywhere), "advantage_no_audience_network" (every platform but Audience Network, WhatsApp Status included; Meta picks the positions), or {"platforms": [${values(PLACEMENT_PLATFORMS)}], "facebook_positions": [...], "instagram_positions": [...], "messenger_positions": [...], "audience_network_positions": [...], "threads_positions": [...], "whatsapp_positions": ["status"]} with Meta's position names (e.g. feed, story, facebook_reels; stream, story, reels). A platform without positions gets all its positions.`, brief: '"advantage", "advantage_no_audience_network" or {platforms, …_positions}' },
   targeting: { t: "object: Meta's own targeting fields, added last (for anything the fields above don't cover)." },
   attribution: { t: `one of ${values(ATTRIBUTION)}.`, brief: values(ATTRIBUTION, "|") },
   min_daily_spend: { t: "number: rupees a day, the ad set's minimum spend (Meta's ad set spend limit, used with a campaign budget).", brief: "rupees a day" },
@@ -367,6 +368,9 @@ const AD_EDIT: Fields<AdEditSpec> = {
   url_tags: { t: 'text: UTM tags added to the link, e.g. "utm_source=facebook&utm_content={{ad.name}}" ("" removes them).' },
   media_url: { t: "text: a Google Drive file link: swaps the ad's image or video (ads with one file only).", brief: "Google Drive file link" },
   creative_id: { t: "Leave out: undo_plan uses it to put the old creative back.", internal: true },
+  tracking_pixels: { t: 'list of website pixel IDs the ad tracks (lookup pixels), e.g. ["111222333444555"]; [] = none. Changes only the ad\'s tracking (no new creative).', brief: "[pixel ID]" },
+  tracking_offline: { t: "list of offline event set IDs the ad tracks; [] = none (removes them). A list left out keeps the ad's current one.", brief: "[dataset ID]" },
+  tracking_specs: { t: "Leave out: undo_plan uses it to put the old tracking back.", internal: true },
 };
 
 /** Audience sources: the fields of each kind (create_custom_audience's "source"). */
@@ -773,7 +777,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
   // ---------- Templates and presets ----------
 
   type CopyT = { id: number; name: string; primaryTexts: string[]; headlines: string[]; descriptions: string[]; cta: string; linkUrl: string; utmTemplate: string; displayLink?: string; leadFormId?: string };
-  type PresetT = { id: number; name: string; pageId: string; pageName: string; igUserId: string; igName: string; enhancementsOn: string[]; multiAdvertiser: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string; isDefault: boolean };
+  type PresetT = { id: number; name: string; pageId: string; pageName: string; igUserId: string; igName: string; enhancementsOn: string[]; multiAdvertiser: boolean; whatsappNumber?: string; threadsUserId?: string; sponsorPageId?: string; isDefault: boolean; offlineDatasetIds?: string[] };
   type Templates = { copy: CopyT[]; presets: PresetT[]; features: { key: string; label: string }[]; naming: { id: number; name: string; kind: "ad" | "adset" | "campaign"; pattern: string; is_default: number }[] };
 
   /** The saved item named by its id or exact name (any case). Close names are listed, never guessed. */
@@ -834,6 +838,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
           `Descriptions: ${c.descriptions.map((x, i) => `${i + 1}. "${x}"`).join(" ") || "none"}`,
           `Display link: ${c.displayLink || "none"} · Lead form: ${c.leadFormId || "none"}`,
           `UTM tags: ${c.utmTemplate || "none"}${!cur && a.utm_template === undefined && c.utmTemplate ? " (the default for new templates)" : ""}`,
+          ...overLimit(c).map((w) => `WARNING: ${w}. Saved, but a launch with it is refused until it is shortened.`),
         ].join("\n");
       }),
   );
@@ -843,7 +848,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
     {
       title: "Create or edit a naming template",
       description:
-        "Naming templates for ads, ad sets and campaigns. Words in braces are filled in: {date} (also {date:YYMMDD}), {n} (auto-number 01, 02…), {creative}, {angle}, {persona}, {format}, {campaign}, {adset}, {objective}, {budget}, {copy}, {batch}. Give template (id or exact name) to edit one; fields left out keep their value.",
+        "Naming templates for ads, ad sets and campaigns. Words in braces are filled in: {date} (also {date:YYMMDD}), {n} (auto-number 01, 02…; {n:1} for 1, 2… with no leading zero), {creative}, {angle}, {persona}, {format}, {campaign}, {adset}, {objective}, {budget}, {copy}, {batch}. Give template (id or exact name) to edit one; fields left out keep their value.",
       inputSchema: {
         template: z.string().optional(),
         kind: z.enum(["ad", "adset", "campaign"]).optional(),
@@ -882,6 +887,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
         multi_advertiser: z.boolean().optional(),
         whatsapp_number: z.string().optional().describe("For 'Send WhatsApp message' buttons, with country code, e.g. +919812345678 (\"\" = none)"),
         threads_account_id: z.string().optional().describe("Threads account ID shown on Threads placements (\"\" = none)"),
+        offline_event_set_ids: z.array(z.string()).optional().describe("Offline event sets (dataset IDs) tracked on each ad, besides the ad set's website pixel; [] = none. Each new ad's tracking is set explicitly to these and the pixel."),
         partner_page_id: z.string().optional().describe("Branded content / partnership ad ('Paid partnership' label): the partner's (sponsor's) Facebook Page ID. This is the field Ads Manager calls \"Branded content\" or \"Branding\". That Page needs a linked Instagram account (\"\" = none)"),
         branded_content_partner: z.string().optional().describe("Same as partner_page_id (Ads Manager's \"Branded content\" partner Page ID)"),
         branding: z.string().optional().describe("Same as partner_page_id (Ads Manager's \"Branding\" / branded content partner Page ID)"),
@@ -918,6 +924,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
           multiAdvertiser: a.multi_advertiser,
           whatsappNumber: a.whatsapp_number,
           threadsUserId: a.threads_account_id,
+          offlineDatasetIds: a.offline_event_set_ids,
           sponsorPageId: partner,
           isDefault: a.is_default,
         };
@@ -931,6 +938,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
           `Facebook Page: ${p.pageName || p.pageId || "not set"}${p.pageId ? ` (ID ${p.pageId})` : ""}. Instagram: ${p.igName ? `@${p.igName}` : p.igUserId ? `ID ${p.igUserId}` : "none (the Facebook Page is used on Instagram)"}${p.igName && p.igUserId ? ` (ID ${p.igUserId})` : ""}.`,
           `Enhancements ON: ${p.enhancementsOn.map((k) => labels.get(k) ?? k).join("; ") || "none (all off)"}. Multi-advertiser ads ${p.multiAdvertiser ? "on" : "off"}.`,
           `WhatsApp number: ${p.whatsappNumber || "none"}. Threads account: ${p.threadsUserId || "none"}. Partner Page (paid partnership): ${p.sponsorPageId || "none"}. (The partner Page is what Ads Manager calls "Branded content".)`,
+          `Tracking on each ad: the ad set's website pixel${p.offlineDatasetIds?.length ? ` and offline event set${p.offlineDatasetIds.length > 1 ? "s" : ""} ${p.offlineDatasetIds.join(", ")}` : ", no offline event sets"} (set explicitly on every new ad).`,
         ].join("\n");
       }),
   );
@@ -991,8 +999,11 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
           }),
         };
         const v = await api.call<{ status?: string }>("POST", `/api/batches/${batch_id}/copy`, body);
-        if (!v.status || v.status === "draft") return `Saved copy for ${rows.length} ad(s) in batch ${batch_id}. Run preview_batch with batch_id to see the result.`;
-        return `Saved copy for ${rows.length} ad(s) in batch ${batch_id}. Those ads are not in Meta yet: retry_failed creates them with the new copy. (Ads already in Meta change only through plan_changes with edit_ad.)`;
+        // Copy over Meta's limits, said now (the preview refuses the launch until it is shortened).
+        const long = rows.flatMap((r) => overLimit({ primaryTexts: r.primary_texts, headlines: r.headlines, descriptions: r.descriptions ?? (r.description !== undefined ? [r.description] : undefined) }).map((w) => `WARNING: ad ${r.ad}: ${w}. Saved, but the launch is refused until it is shortened.`));
+        const tail = long.length ? `\n${long.join("\n")}` : "";
+        if (!v.status || v.status === "draft") return `Saved copy for ${rows.length} ad(s) in batch ${batch_id}. Run preview_batch with batch_id to see the result.${tail}`;
+        return `Saved copy for ${rows.length} ad(s) in batch ${batch_id}. Those ads are not in Meta yet: retry_failed creates them with the new copy. (Ads already in Meta change only through plan_changes with edit_ad.)${tail}`;
       }),
   );
 
@@ -1152,6 +1163,13 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
       }),
   );
 
+  /** "website pixel "Sahajta AI" (909…) · offline event sets: none". */
+  const trackingText = (t?: { pixels: { id: string; name: string | null }[]; offline: { id: string; name: string | null }[] }) => {
+    if (!t) return "–";
+    const one = (x: { id: string; name: string | null }) => (x.name ? `"${x.name}" (${x.id})` : x.id);
+    return `website pixel ${t.pixels.map(one).join(", ") || "none"} · offline event set${t.offline.length === 1 ? "" : "s"} ${t.offline.map(one).join(", ") || "none"}`;
+  };
+
   /** "IMG2.png" / "image IMG2.png, image IMG2_4x5.png" / "video 1234 (name not known)". */
   const fileText = (files?: { kind: "image" | "video"; id: string; name: string | null }[]) =>
     files?.length ? files.map((f) => (f.name ? `${f.kind} ${f.name}` : `${f.kind} ${f.id} (name not known)`)).join(", ") : "–";
@@ -1160,14 +1178,14 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
     "list_ads",
     {
       title: "Ads in an ad set",
-      description: "The ads of one ad set (by ID or name): ID, name, on/off (on or paused) and Meta's review state apart (e.g. \"paused · in review\"), texts, headlines, descriptions, button, the image or video file (by file name), link, display link, UTM tags, and the Facebook post ID / Instagram media ID behind each (up to 100 ads). Use it to check an ad after edit_ad or copy_ad: still paused, the new texts, button and file. Reuse a post with ads_from_post by its Facebook post ID (the Instagram media ID of an ad's post is for reference; Meta refuses it). Also for copy_ad and edit_ad.",
+      description: "The ads of one ad set (by ID or name): ID, name, on/off (on or paused) and Meta's review state apart (e.g. \"paused · in review\"), texts, headlines, descriptions, button, the image or video file (by file name), link, display link, UTM tags, tracking (website pixel and offline event sets), and the Facebook post ID / Instagram media ID behind each (up to 100 ads). Use it to check an ad after edit_ad or copy_ad: still paused, the new texts, button and file. Reuse a post with ads_from_post by its Facebook post ID (the Instagram media ID of an ad's post is for reference; Meta refuses it). Also for copy_ad and edit_ad.",
       inputSchema: { adset: z.string().describe("Ad set ID or name") },
       annotations: { readOnlyHint: true },
     },
     async ({ adset }) =>
       run(async () => {
         const f = await idOf(api, "adset", adset);
-        type Ad = { id: string; name: string; status: string; effectiveStatus: string; onOff?: string; review?: string; fromPost: boolean; postId: string | null; instagramMediaId: string | null; primaryTexts: string[]; headlines: string[]; descriptions?: string[]; displayLink?: string | null; link: string | null; button?: string | null; utmTags?: string | null; files?: { kind: "image" | "video"; id: string; name: string | null }[] };
+        type Ad = { id: string; name: string; status: string; effectiveStatus: string; onOff?: string; review?: string; fromPost: boolean; postId: string | null; instagramMediaId: string | null; primaryTexts: string[]; headlines: string[]; descriptions?: string[]; displayLink?: string | null; link: string | null; button?: string | null; utmTags?: string | null; files?: { kind: "image" | "video"; id: string; name: string | null }[]; tracking?: { pixels: { id: string; name: string | null }[]; offline: { id: string; name: string | null }[] } };
         const r = await api.call<{ ads: Ad[]; truncated?: boolean; note?: string | null }>("GET", `/api/manage/ads?adset=${encodeURIComponent(f.id)}`);
         const which = foundText("adset", f, adset);
         if (!r.ads.length) return `No ads in ${which}.`;
@@ -1177,7 +1195,7 @@ export function registerManageTools(server: McpServer, api: LauncherApi) {
         lines.push(
           ...r.ads.map(
             (a) =>
-              `- "${a.name}" (id ${a.id}) · ${state(a)}${a.fromPost ? " · runs an existing post" : ""} · post ID ${a.postId ?? "–"} · Instagram media ID ${a.instagramMediaId ?? "–"}\n  texts: ${a.primaryTexts.map((t) => `"${t.slice(0, 80)}"`).join(" | ") || "–"}\n  headlines: ${a.headlines.join(" | ") || "–"}\n  descriptions: ${a.descriptions?.map((d) => `"${d}"`).join(" | ") || "–"}\n  button: ${a.button ? a.button.replace(/_/g, " ").toLowerCase() : "–"} · file: ${fileText(a.files)}\n  link: ${a.link ?? "–"} · display link: ${a.displayLink ?? "–"} · UTM tags: ${a.utmTags || "–"}`,
+              `- "${a.name}" (id ${a.id}) · ${state(a)}${a.fromPost ? " · runs an existing post" : ""} · post ID ${a.postId ?? "–"} · Instagram media ID ${a.instagramMediaId ?? "–"}\n  texts: ${a.primaryTexts.map((t) => `"${t.slice(0, 80)}"`).join(" | ") || "–"}\n  headlines: ${a.headlines.join(" | ") || "–"}\n  descriptions: ${a.descriptions?.map((d) => `"${d}"`).join(" | ") || "–"}\n  button: ${a.button ? a.button.replace(/_/g, " ").toLowerCase() : "–"} · file: ${fileText(a.files)}\n  link: ${a.link ?? "–"} · display link: ${a.displayLink ?? "–"} · UTM tags: ${a.utmTags || "–"}\n  tracking: ${trackingText(a.tracking)}`,
           ),
         );
         if (r.truncated || r.note) lines.push(r.note ?? "Only the first ads of this ad set are listed.");

@@ -103,7 +103,7 @@ export function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; 
           {texts.map((x, i) => (
             <div key={i}>
               <textarea rows={2} value={x} onChange={(e) => setTexts(texts.map((y, j) => (j === i ? e.target.value : y)))} style={{ marginBottom: 2 }} />
-              {x.length > 125 && <small style={{ color: "var(--warn)" }}>{x.length} characters; over 125 gets cut off with "See more"</small>}
+              {x.length > 1024 ? <small style={{ color: "var(--err)" }}>{x.length} characters: over Meta's limit of 1,024, so a launch with it is refused. Shorten it.</small> : x.length > 125 && <small style={{ color: "var(--warn)" }}>{x.length} characters; over 125 gets cut off with "See more"</small>}
             </div>
           ))}
         </div>
@@ -112,7 +112,7 @@ export function CopyEditor({ t, ctas, onSaved, onCancel }: { t: Partial<CopyT>; 
           {heads.map((x, i) => (
             <div key={i}>
               <input value={x} onChange={(e) => setHeads(heads.map((y, j) => (j === i ? e.target.value : y)))} style={{ marginBottom: 2 }} />
-              {x.length > 40 && <small style={{ color: "var(--warn)" }}>{x.length} characters; may be cut off</small>}
+              {x.length > 255 ? <small style={{ color: "var(--err)" }}>{x.length} characters: over Meta's limit of 255. Shorten it.</small> : x.length > 40 && <small style={{ color: "var(--warn)" }}>{x.length} characters; may be cut off</small>}
             </div>
           ))}
           <small>Descriptions (up to 5)</small>
@@ -178,7 +178,7 @@ function NamingTab({ tpl, reload }: { tpl: FullTemplates; reload: () => void }) 
             <label><span>Name</span><input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} /></label>
             <label><span>Pattern</span><input value={draft.pattern} onChange={(e) => setDraft({ ...draft, pattern: e.target.value })} /></label>
           </div>
-          <p>Preview: <span className="preview-name">{renderName(draft.pattern, sample)}{draft.kind === "campaign" ? "" : " [L:k4r94-01]"}</span></p>
+          <p>Preview: <span className="preview-name">{renderName(draft.pattern, sample)}{draft.kind === "adset" ? " [L:k4r94-01] (only on ad sets the launcher makes)" : ""}</span></p>
           <label className="check"><input type="checkbox" checked={draft.isDefault} onChange={(e) => setDraft({ ...draft, isDefault: e.target.checked })} /> {draft.kind === "campaign" ? "Use for new campaigns" : "Use for new batches"}</label>
           <details open><summary>Words you can use</summary>{tpl.tokens.map((t) => <div key={t.token}><code>{t.token}</code> {t.meaning}</div>)}</details>
           {error && <div className="msg error">{error}</div>}
@@ -255,6 +255,10 @@ export function PresetEditor({ p, features, onSaved, onCancel }: { p: Partial<Pr
         <label><span>Partner Page ID (partnership ads)</span>
           <input inputMode="numeric" value={form.sponsorPageId} onChange={(e) => setForm({ ...form, sponsorPageId: e.target.value })} placeholder="Leave empty for none" />
           <small>The partner&apos;s Facebook Page; the ads show &apos;Paid partnership&apos;. The Page needs a linked Instagram account.</small>
+        </label>
+        <label><span>Offline event sets to track (IDs)</span>
+          <input value={form.offlineDatasetIds} onChange={(e) => setForm({ ...form, offlineDatasetIds: e.target.value })} placeholder="Leave empty for none" />
+          <small>Each ad tracks its ad set&apos;s website pixel. Add offline event set IDs here (commas between) to track those too.</small>
         </label>
       </div>
       <h2 style={{ marginTop: 16 }}>AI creative enhancements</h2>

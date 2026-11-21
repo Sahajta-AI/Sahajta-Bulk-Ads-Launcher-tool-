@@ -355,4 +355,11 @@ export const migrations: string[] = [
   ALTER TABLE copy_templates ADD COLUMN descriptions TEXT NOT NULL DEFAULT '[]';   -- JSON list, up to 5
   UPDATE copy_templates SET descriptions = json_array(trim(description)) WHERE trim(description) != '';
   `,
+  // 10: Project Uday live launch (21 Nov): each ad's tracking is set explicitly (Meta otherwise adds its own
+  //     offline event set): the ad set's website pixel, saved when the launch is confirmed, and the preset's
+  //     offline event sets.
+  `
+  ALTER TABLE batches ADD COLUMN tracking_pixel TEXT;                                   -- the ad set's pixel; '' = none; NULL = not known yet (read at run)
+  ALTER TABLE settings_presets ADD COLUMN offline_dataset_ids TEXT NOT NULL DEFAULT ''; -- offline event sets tracked on each ad, comma-separated
+  `,
 ];

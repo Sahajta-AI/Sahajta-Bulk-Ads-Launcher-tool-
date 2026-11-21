@@ -49,6 +49,7 @@ export function presetForm(p: PresetT) {
     whatsappNumber: p.whatsappNumber ?? "",
     threadsUserId: p.threadsUserId ?? "",
     sponsorPageId: p.sponsorPageId ?? "",
+    offlineDatasetIds: (p.offlineDatasetIds ?? []).join(", "),
     multiAdvertiser: p.multiAdvertiser ?? false,
     isDefault: p.isDefault ?? false,
   };
@@ -67,6 +68,7 @@ export function presetBody(form: PresetForm, on: Iterable<string>) {
     ...form,
     threadsUserId: form.threadsUserId.trim(),
     sponsorPageId: form.sponsorPageId.trim(),
+    offlineDatasetIds: form.offlineDatasetIds.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean),
     enhancements: Object.fromEntries([...on].map((k) => [k, "OPT_IN" as const])),
     create: !form.id,
   };

@@ -22,7 +22,7 @@ export const NAME_TOKENS: { token: string; meaning: string }[] = [
   { token: "{creative}", meaning: "Creative name from the file name, ratio removed (hook-01)" },
   { token: "{angle}", meaning: "Angle you type for the batch or for one ad" },
   { token: "{format}", meaning: "VID or IMG plus the ratios, e.g. VID-9x16+4x5" },
-  { token: "{n}", meaning: "Ad number in this batch, 01, 02, ..." },
+  { token: "{n}", meaning: "Ad number in this batch, 01, 02, ... Other widths: {n:1} gives 1, 2, ... (no leading zero), {n:3} gives 001" },
   { token: "{copy}", meaning: "Copy template name" },
   { token: "{campaign}", meaning: "Campaign name" },
   { token: "{adset}", meaning: "Ad set name" },
@@ -61,7 +61,8 @@ function tokenValue(name: string, arg: string | undefined, ctx: NameContext): st
     case "creative": return ctx.creative ?? "";
     case "angle": return ctx.angle ?? "";
     case "format": return ctx.format ?? "";
-    case "n": return ctx.n === undefined ? "" : pad(ctx.n);
+    // {n} = 01, 02 …; {n:1} = 1, 2 … (no leading zero); {n:3} = 001 …
+    case "n": return ctx.n === undefined ? "" : String(ctx.n).padStart(arg && /^[1-6]$/.test(arg.trim()) ? Number(arg.trim()) : 2, "0");
     case "batch": return ctx.batch ?? "";
     case "copy": return ctx.copy ?? "";
     case "campaign": return ctx.campaign ?? "";
@@ -97,7 +98,16 @@ export function keyTag(key: string): string {
   return `[L:${key}]`;
 }
 
-/** The exact name sent to Meta: optional TEST_ prefix + rendered name + launch key. */
+/**
+ * The ad's name in Meta: optional TEST_ prefix + the rendered name, with no launch key (people read ad
+ * names in Ads Manager; 21 Nov 2026). The launcher finds its ads by ad set and creative instead.
+ */
+export function metaAdName(rendered: string, prefix = "", maxBody = 400): string {
+  const body = rendered.slice(0, maxBody).trim();
+  return (prefix && !body.startsWith(prefix) ? prefix + body : body).trim();
+}
+
+/** The exact name sent to Meta for creatives and new ad sets: optional TEST_ prefix + rendered name + launch key. */
 export function metaName(rendered: string, key: string, prefix = "", maxBody = 200): string {
   const tag = keyTag(key);
   const body = rendered.slice(0, maxBody).trim();

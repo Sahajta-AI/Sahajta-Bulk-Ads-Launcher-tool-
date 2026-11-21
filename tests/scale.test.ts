@@ -80,7 +80,7 @@ describe("95-ad batch on the slowest Meta tier", () => {
     const ads = mock.of("ad");
     expect(ads).toHaveLength(95);
     expect(ads.every((a) => a.status === "PAUSED")).toBe(true);
-    expect(new Set(ads.map((a) => keyOf(a.name))).size).toBe(95);
+    expect(new Set(ads.map((a) => a.creative_id)).size).toBe(95);
     expect(mock.of("creative")).toHaveLength(95);
     expect(mock.calls.filter((c) => c.path.startsWith("rupload/")).length).toBe(80); // 60 + 20 videos, each once
     expect(mock.calls.filter((c) => c.path.endsWith("adimages")).length).toBe(65); // 40 + 25 images, each once
@@ -116,7 +116,8 @@ describe("95-ad batch on the slowest Meta tier", () => {
     }
     expect(result).toEqual({ done: 95, failed: 0 });
     expect(mock.of("ad")).toHaveLength(95);
-    expect(new Set(mock.of("ad").map((a) => keyOf(a.name))).size).toBe(95);
+    expect(new Set(mock.of("ad").map((a) => a.creative_id)).size).toBe(95);
+    expect(new Set(getAds(batchId).map((a) => a.meta_ad_id))).toEqual(new Set(mock.of("ad").map((a) => a.id)));
     expect(mock.of("creative")).toHaveLength(95);
     expect(getAds(batchId).every((a) => a.status === "done" && a.meta_ad_id)).toBe(true);
   }, 240_000);

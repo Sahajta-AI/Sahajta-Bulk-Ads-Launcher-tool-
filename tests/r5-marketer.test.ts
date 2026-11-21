@@ -297,7 +297,7 @@ describe("D2 + D3 · WhatsApp, Threads and the branded content partner Page", ()
     const l = await call("list_templates", {});
     expect(l.text).toMatch(/"Brand" \(id \d+\): .*WhatsApp \+919812345678, Threads account 777, partner Page \(branded content\) 888/);
     const r = await call("preview_batch", { batch_id: key, settings_preset: "Brand" });
-    expect(r.text).toMatch(/^Settings preset: Brand \(Facebook Page Sahajta AI, Instagram @sahajta\.ai, WhatsApp number \+919812345678, Threads account 777, branded content partner Page 888, AI enhancements all off, multi-advertiser off\)\.$/m);
+    expect(r.text).toMatch(/^Settings preset: Brand \(Facebook Page Sahajta AI, Instagram @sahajta\.ai, WhatsApp number \+919812345678, Threads account 777, branded content partner Page 888, offline event sets tracked none, AI enhancements all off, multi-advertiser off\)\.$/m);
     // The other names of the same field, and two different values refused.
     expect((await call("save_settings_preset", { preset: "Brand", branded_content_partner: "999" })).text).toMatch(/Partner Page \(paid partnership\): 999\./);
     const both = await call("save_settings_preset", { preset: "Brand", partner_page_id: "1", branding: "2" });
